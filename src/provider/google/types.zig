@@ -1,0 +1,132 @@
+const std = @import("std");
+const llm = @import("llm");
+const api = @import("api.zig");
+
+const Allocator = std.mem.Allocator;
+
+pub const ListModelsResult = struct {
+    models: []const llm.types.Model,
+
+    allocator: Allocator,
+    parsed_response: std.json.Parsed(api.ListModelsResponse),
+
+    pub fn init(allocator: Allocator, parsed_response: std.json.Parsed(api.ListModelsResponse)) !llm.types.ListModelsResult {
+        const self = try allocator.create(ListModelsResult);
+        errdefer allocator.destroy(self);
+        var models = try allocator.alloc(llm.types.Model, parsed_response.value.models.len);
+        errdefer allocator.free(models);
+        for (parsed_response.value.models, 0..) |gemini_model, i| {
+            models[i].id = gemini_model.name;
+            models[i].display_name = gemini_model.displayName;
+        }
+        self.* = .{
+            .allocator = allocator,
+            .parsed_response = parsed_response,
+            .models = models,
+        };
+
+        return .{
+            .ptr = self,
+            .vtable = &.{ .deinit = deinit },
+            .models = models,
+        };
+    }
+
+    pub fn deinit(ctx: *anyopaque) void {
+        const self: *ListModelsResult = @ptrCast(@alignCast(ctx));
+        self.allocator.free(self.models);
+        self.parsed_response.deinit();
+        self.allocator.destroy(self);
+        self.* = undefined;
+    }
+};
+
+pub const StepResult = struct {
+    interaction_id: []const u8,
+
+    model_output: std.ArrayList(llm.types.StepResult.ModelOutput),
+    thoughts: std.ArrayList(llm.types.StepResult.Thought),
+    tool_calls: std.ArrayList(llm.types.StepResult.ToolCall),
+
+    allocator: std.mem.Allocator,
+    parsed_response: std.json.Parsed(api.Interaction),
+
+    pub fn init(allocator: std.mem.Allocator, parsed_response: std.json.Parsed(api.Interaction)) !llm.types.StepResult {
+        var model_output_list: std.ArrayList(llm.types.StepResult.ModelOutput) = .empty;
+        errdefer model_output_list.deinit(allocator);
+        var thoughts_list: std.ArrayList(llm.types.StepResult.Thought) = .empty;
+        errdefer thoughts_list.deinit(allocator);
+        var tool_calls_list: std.ArrayList(llm.types.StepResult.ToolCall) = .empty;
+        errdefer tool_calls_list.deinit(allocator);
+
+        for (parsed_response.value.steps) |step| {
+            switch (step) {
+                .model_output => |contents| {
+                    for (contents) |content| {
+                        if (content.text) |text| {
+                            try model_output_list.append(allocator, .{
+                                .text = text,
+                            });
+                        }
+                    }
+                },
+                .thought => |thoughts| {
+                    for (thoughts) |thought| {
+                        if (thought.text) |text| {
+                            try thoughts_list.append(allocator, .{
+                                .text = text,
+                            });
+                        }
+                    }
+                },
+                .function_call => |call| {
+                    var argument_list: std.ArrayList(llm.types.StepResult.ToolCall.Argument) = .empty;
+                    errdefer argument_list.deinit(allocator);
+                    for (call.arguments) |argument| {
+                        try argument_list.append(allocator, .{
+                            .name = argument.name,
+                            .value = argument.value,
+                        });
+                    }
+                    try tool_calls_list.append(allocator, .{
+                        .id = call.id,
+                        .name = call.name,
+                        .arguments = try argument_list.toOwnedSlice(allocator),
+                    });
+                },
+            }
+        }
+
+        const self = try allocator.create(StepResult);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .interaction_id = parsed_response.value.id,
+            .model_output = model_output_list,
+            .thoughts = thoughts_list,
+            .tool_calls = tool_calls_list,
+            .allocator = allocator,
+            .parsed_response = parsed_response,
+        };
+
+        return .{
+            .ptr = self,
+            .vtable = &.{ .deinit = deinit },
+            .model_output = model_output_list.items,
+            .thoughts = thoughts_list.items,
+            .tool_calls = tool_calls_list.items,
+        };
+    }
+
+    pub fn deinit(ctx: *anyopaque) void {
+        const self: *StepResult = @ptrCast(@alignCast(ctx));
+        self.model_output.deinit(self.allocator);
+        self.thoughts.deinit(self.allocator);
+        for (self.tool_calls.items) |call| {
+            self.allocator.free(call.arguments);
+        }
+        self.tool_calls.deinit(self.allocator);
+        self.parsed_response.deinit();
+        self.allocator.destroy(self);
+        self.* = undefined;
+    }
+};
