@@ -2,6 +2,8 @@ const std = @import("std");
 
 const MockHttpClient = @This();
 
+expected_scheme: []const u8,
+expected_host: []const u8,
 expected_path: []const u8,
 expected_query: ?[]const u8 = null,
 expected_method: std.http.Method,
@@ -11,9 +13,9 @@ response_body: []const u8,
 
 pub fn fetch(self: *MockHttpClient, options: anytype) !struct { status: std.http.Status } {
     // 1. Verify URI
-    try std.testing.expectEqualStrings("https", options.location.uri.scheme);
+    try std.testing.expectEqualStrings(self.expected_scheme, options.location.uri.scheme);
     if (options.location.uri.host) |host| {
-        try std.testing.expectEqualStrings("example.com", host.percent_encoded);
+        try std.testing.expectEqualStrings(self.expected_host, host.percent_encoded);
     } else {
         return error.ExpectedHost;
     }

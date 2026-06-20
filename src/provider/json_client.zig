@@ -81,6 +81,8 @@ test "getRequest success" {
     };
 
     const mock_client: testing.MockHttpClient = .{
+        .expected_scheme = "https",
+        .expected_host = "example.com",
         .expected_path = "/test",
         .expected_method = .GET,
         .expected_payload = null,
@@ -107,6 +109,8 @@ test "getRequest failure" {
     };
 
     const mock_client: testing.MockHttpClient = .{
+        .expected_scheme = "https",
+        .expected_host = "example.com",
         .expected_path = "/test",
         .expected_method = .GET,
         .expected_payload = null,
@@ -131,6 +135,8 @@ test "postRequest success" {
     };
 
     const mock_client: testing.MockHttpClient = .{
+        .expected_scheme = "https",
+        .expected_host = "example.com",
         .expected_path = "/post",
         .expected_method = .POST,
         .expected_payload = "{\"input\":\"hello\"}",
@@ -161,6 +167,8 @@ test "postRequest failure" {
     };
 
     const mock_client: testing.MockHttpClient = .{
+        .expected_scheme = "https",
+        .expected_host = "example.com",
         .expected_path = "/post",
         .expected_method = .POST,
         .expected_payload = "{\"input\":\"hello\"}",
