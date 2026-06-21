@@ -88,3 +88,369 @@ fn MakeProvider(comptime ClientType: type) type {
         }
     };
 }
+
+const testing = @import("testing");
+
+test "Gemini initialization and deinitialization" {
+    const allocator = std.testing.allocator;
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{};
+    const mock_client: testing.MockHttpClient = .{
+        .expectations = &expectations,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    p.deinit();
+}
+
+test "Gemini.listModels success" {
+    const allocator = std.testing.allocator;
+    const response_json =
+        \\{
+        \\  "models": [
+        \\    {
+        \\      "name": "models/gemini-2.0-flash",
+        \\      "version": "2.0",
+        \\      "displayName": "Gemini 2.0 Flash",
+        \\      "description": "Fast and versatile",
+        \\      "inputTokenLimit": 1048576,
+        \\      "outputTokenLimit": 8192
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "generativelanguage.googleapis.com",
+            .expected_path = "/v1beta/models",
+            .expected_query = "key=TEST_API_KEY",
+            .expected_method = .GET,
+            .response_status = .ok,
+            .response_body = response_json,
+        },
+    };
+
+    const mock_client: testing.MockHttpClient = .{
+        .expectations = &expectations,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    var result = try p.listModels(allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.models.len);
+    try std.testing.expectEqualStrings("models/gemini-2.0-flash", result.models[0].id);
+    try std.testing.expectEqualStrings("Gemini 2.0 Flash", result.models[0].display_name);
+}
+
+test "Gemini.listModels HTTP failure" {
+    const allocator = std.testing.allocator;
+
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "generativelanguage.googleapis.com",
+            .expected_path = "/v1beta/models",
+            .expected_query = "key=TEST_API_KEY",
+            .expected_method = .GET,
+            .response_status = .internal_server_error,
+            .response_body = "",
+        },
+    };
+
+    const mock_client: testing.MockHttpClient = .{
+        .expectations = &expectations,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    try std.testing.expectError(error.HttpRequestFailed, p.listModels(allocator));
+}
+
+test "Gemini.executeStep success" {
+    const allocator = std.testing.allocator;
+
+    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[]}";
+    const response_json =
+        \\{
+        \\  "id": "interaction_123",
+        \\  "steps": [
+        \\    {
+        \\      "type": "thought",
+        \\      "summary": [
+        \\        {
+        \\          "type": "text",
+        \\          "text": "Thinking..."
+        \\        }
+        \\      ]
+        \\    },
+        \\    {
+        \\      "type": "model_output",
+        \\      "content": [
+        \\        {
+        \\          "type": "text",
+        \\          "text": "Hello user!"
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "generativelanguage.googleapis.com",
+            .expected_path = "/v1beta/interactions",
+            .expected_query = "key=TEST_API_KEY",
+            .expected_method = .POST,
+            .expected_payload = expected_payload,
+            .response_status = .ok,
+            .response_body = response_json,
+        },
+    };
+    var call_counts = [_]usize{0};
+
+    const mock_client = testing.MockHttpClient{
+        .expectations = &expectations,
+        .sequential = false,
+        .call_counts = &call_counts,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
+        .tools = &.{},
+    };
+    const input = &[_]llm.types.Step{
+        .{ .prompt = "Hello" },
+    };
+
+    var result = try p.executeStep(allocator, config, input, null);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.model_output.len);
+    try std.testing.expectEqualStrings("Hello user!", result.model_output[0].text);
+    try std.testing.expectEqual(1, result.thoughts.len);
+    try std.testing.expectEqualStrings("Thinking...", result.thoughts[0].text);
+
+    const gemini_result: *gemini_types.StepResult = @ptrCast(@alignCast(result.ptr));
+    try std.testing.expectEqualStrings("interaction_123", gemini_result.interaction_id);
+    try std.testing.expectEqual(1, call_counts[0]);
+}
+
+test "Gemini.executeStep with previous step" {
+    const allocator = std.testing.allocator;
+
+    const payload1 = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[]}";
+    const response1 =
+        \\{
+        \\  "id": "interaction_123",
+        \\  "steps": [
+        \\    {
+        \\      "type": "model_output",
+        \\      "content": [
+        \\        {
+        \\          "type": "text",
+        \\          "text": "Hello user!"
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    const payload2 = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Next prompt\"}]}],\"previous_interaction_id\":\"interaction_123\",\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[]}";
+    const response2 =
+        \\{
+        \\  "id": "interaction_456",
+        \\  "steps": [
+        \\    {
+        \\      "type": "model_output",
+        \\      "content": [
+        \\        {
+        \\          "type": "text",
+        \\          "text": "Next response"
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "generativelanguage.googleapis.com",
+            .expected_path = "/v1beta/interactions",
+            .expected_query = "key=TEST_API_KEY",
+            .expected_method = .POST,
+            .expected_payload = payload1,
+            .response_status = .ok,
+            .response_body = response1,
+        },
+        .{
+            .expected_scheme = "https",
+            .expected_host = "generativelanguage.googleapis.com",
+            .expected_path = "/v1beta/interactions",
+            .expected_query = "key=TEST_API_KEY",
+            .expected_method = .POST,
+            .expected_payload = payload2,
+            .response_status = .ok,
+            .response_body = response2,
+        },
+    };
+    var call_counts = [_]usize{ 0, 0 };
+
+    const mock_client = testing.MockHttpClient{
+        .expectations = &expectations,
+        .sequential = true,
+        .call_counts = &call_counts,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
+        .tools = &.{},
+    };
+
+    // First call
+    const input1 = &[_]llm.types.Step{
+        .{ .prompt = "Hello" },
+    };
+    var result1 = try p.executeStep(allocator, config, input1, null);
+    defer result1.deinit();
+
+    try std.testing.expectEqualStrings("Hello user!", result1.model_output[0].text);
+
+    // Second call
+    const input2 = &[_]llm.types.Step{
+        .{ .prompt = "Next prompt" },
+    };
+    var result2 = try p.executeStep(allocator, config, input2, result1);
+    defer result2.deinit();
+
+    try std.testing.expectEqualStrings("Next response", result2.model_output[0].text);
+    try std.testing.expectEqual(1, call_counts[0]);
+    try std.testing.expectEqual(1, call_counts[1]);
+}
+
+test "Gemini.executeStep with tools" {
+    const allocator = std.testing.allocator;
+
+    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\",\"description\":\"City\"}},\"required\":[\"location\"]}}]}";
+    const response_json =
+        \\{
+        \\  "id": "interaction_123",
+        \\  "steps": [
+        \\    {
+        \\      "type": "model_output",
+        \\      "content": [
+        \\        {
+        \\          "type": "text",
+        \\          "text": "Weather is nice!"
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "generativelanguage.googleapis.com",
+            .expected_path = "/v1beta/interactions",
+            .expected_query = "key=TEST_API_KEY",
+            .expected_method = .POST,
+            .expected_payload = expected_payload,
+            .response_status = .ok,
+            .response_body = response_json,
+        },
+    };
+    var call_counts = [_]usize{0};
+
+    const mock_client = testing.MockHttpClient{
+        .expectations = &expectations,
+        .sequential = false,
+        .call_counts = &call_counts,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    const param = llm.types.Tool.Param{
+        .name = "location",
+        .description = "City",
+        .type = .string,
+        .required = true,
+    };
+    const tool = llm.types.Tool{
+        .name = "get_weather",
+        .description = "Get weather",
+        .parameters = &.{param},
+    };
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
+        .tools = &.{tool},
+    };
+    const input = &[_]llm.types.Step{
+        .{ .prompt = "Hello" },
+    };
+
+    var result = try p.executeStep(allocator, config, input, null);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Weather is nice!", result.model_output[0].text);
+    try std.testing.expectEqual(1, call_counts[0]);
+}
+
+test "Gemini.executeStep HTTP failure" {
+    const allocator = std.testing.allocator;
+
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "generativelanguage.googleapis.com",
+            .expected_path = "/v1beta/interactions",
+            .expected_query = "key=TEST_API_KEY",
+            .expected_method = .POST,
+            .response_status = .internal_server_error,
+            .response_body = "",
+        },
+    };
+
+    const mock_client: testing.MockHttpClient = .{
+        .expectations = &expectations,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
+        .tools = &.{},
+    };
+    const input = &[_]llm.types.Step{
+        .{ .prompt = "Hello" },
+    };
+
+    try std.testing.expectError(error.HttpRequestFailed, p.executeStep(allocator, config, input, null));
+}
+
+

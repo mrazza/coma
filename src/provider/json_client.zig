@@ -80,14 +80,20 @@ test "getRequest success" {
         nextPageToken: ?[]const u8,
     };
 
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "example.com",
+            .expected_path = "/test",
+            .expected_method = .GET,
+            .expected_payload = null,
+            .response_status = .ok,
+            .response_body = "{\"model\": \"model\", \"nextPageToken\": null}",
+        },
+    };
+
     const mock_client: testing.MockHttpClient = .{
-        .expected_scheme = "https",
-        .expected_host = "example.com",
-        .expected_path = "/test",
-        .expected_method = .GET,
-        .expected_payload = null,
-        .response_status = .ok,
-        .response_body = "{\"model\": \"model\", \"nextPageToken\": null}",
+        .expectations = &expectations,
     };
 
     var rpc_client: MockJsonClient = .{ .http_client = mock_client };
@@ -108,14 +114,20 @@ test "getRequest failure" {
         nextPageToken: []const u8,
     };
 
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "example.com",
+            .expected_path = "/test",
+            .expected_method = .GET,
+            .expected_payload = null,
+            .response_status = .not_found,
+            .response_body = "",
+        },
+    };
+
     const mock_client: testing.MockHttpClient = .{
-        .expected_scheme = "https",
-        .expected_host = "example.com",
-        .expected_path = "/test",
-        .expected_method = .GET,
-        .expected_payload = null,
-        .response_status = .not_found,
-        .response_body = "",
+        .expectations = &expectations,
     };
 
     var rpc_client: MockJsonClient = .{ .http_client = mock_client };
@@ -134,14 +146,20 @@ test "postRequest success" {
         id: []const u8,
     };
 
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "example.com",
+            .expected_path = "/post",
+            .expected_method = .POST,
+            .expected_payload = "{\"input\":\"hello\"}",
+            .response_status = .ok,
+            .response_body = "{\"id\":\"123\"}",
+        },
+    };
+
     const mock_client: testing.MockHttpClient = .{
-        .expected_scheme = "https",
-        .expected_host = "example.com",
-        .expected_path = "/post",
-        .expected_method = .POST,
-        .expected_payload = "{\"input\":\"hello\"}",
-        .response_status = .ok,
-        .response_body = "{\"id\":\"123\"}",
+        .expectations = &expectations,
     };
 
     var rpc_client: MockJsonClient = .{ .http_client = mock_client };
@@ -166,14 +184,20 @@ test "postRequest failure" {
         id: []const u8,
     };
 
+    const expectations = [_]testing.MockHttpClient.RequestExpectation{
+        .{
+            .expected_scheme = "https",
+            .expected_host = "example.com",
+            .expected_path = "/post",
+            .expected_method = .POST,
+            .expected_payload = "{\"input\":\"hello\"}",
+            .response_status = .internal_server_error,
+            .response_body = "",
+        },
+    };
+
     const mock_client: testing.MockHttpClient = .{
-        .expected_scheme = "https",
-        .expected_host = "example.com",
-        .expected_path = "/post",
-        .expected_method = .POST,
-        .expected_payload = "{\"input\":\"hello\"}",
-        .response_status = .internal_server_error,
-        .response_body = "",
+        .expectations = &expectations,
     };
 
     var rpc_client: MockJsonClient = .{ .http_client = mock_client };

@@ -34,10 +34,11 @@ pub const ListModelsResult = struct {
 
     pub fn deinit(ctx: *anyopaque) void {
         const self: *ListModelsResult = @ptrCast(@alignCast(ctx));
-        self.allocator.free(self.models);
+        const allocator = self.allocator;
+        allocator.free(self.models);
         self.parsed_response.deinit();
-        self.allocator.destroy(self);
         self.* = undefined;
+        allocator.destroy(self);
     }
 };
 
@@ -119,14 +120,15 @@ pub const StepResult = struct {
 
     pub fn deinit(ctx: *anyopaque) void {
         const self: *StepResult = @ptrCast(@alignCast(ctx));
-        self.model_output.deinit(self.allocator);
-        self.thoughts.deinit(self.allocator);
+        const allocator = self.allocator;
+        self.model_output.deinit(allocator);
+        self.thoughts.deinit(allocator);
         for (self.tool_calls.items) |call| {
-            self.allocator.free(call.arguments);
+            allocator.free(call.arguments);
         }
-        self.tool_calls.deinit(self.allocator);
+        self.tool_calls.deinit(allocator);
         self.parsed_response.deinit();
-        self.allocator.destroy(self);
         self.* = undefined;
+        allocator.destroy(self);
     }
 };
