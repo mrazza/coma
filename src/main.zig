@@ -131,6 +131,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const step_result = try client.executeStep(allocator, session_config, new_steps.items, last_step);
+        errdefer step_result.deinit();
         for (last_tool_results.items) |tool_call| {
             allocator.free(tool_call.result);
         }
