@@ -173,7 +173,7 @@ pub fn build(b: *std.Build) void {
 
     // Creates an executable that will run `test` blocks from the llm module.
     const llm_test_module = b.createModule(.{
-        .root_source_file = b.path("src/llm/test.zig"),
+        .root_source_file = b.path("src/llm/root.tests.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
