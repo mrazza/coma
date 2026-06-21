@@ -83,7 +83,7 @@ pub fn toGoogleStep(arena: Allocator, step: llm.types.Step) !api.CreateInteracti
     }
 }
 
-test "toGoogleTool conversion" {
+test toGoogleTool {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -145,7 +145,7 @@ test "toGoogleTool with no parameters" {
     try std.testing.expect(google_tool.function.parameters.required == null);
 }
 
-test "toGoogleStep conversion" {
+test toGoogleStep {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -170,4 +170,3 @@ test "toGoogleStep conversion" {
     try std.testing.expectEqualStrings("call_123", google_tool.function_result.call_id);
     try std.testing.expectEqualStrings("success", google_tool.function_result.result);
 }
-
