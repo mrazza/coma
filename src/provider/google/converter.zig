@@ -57,6 +57,32 @@ pub fn toGoogleTool(arena: Allocator, tool: llm.types.Tool) !api.Tool {
     };
 }
 
+pub fn toGoogleStep(arena: Allocator, step: llm.types.Step) !api.CreateInteractionRequest.Step {
+    switch (step) {
+        .prompt => |prompt| {
+            const content = try arena.alloc(api.Content, 1);
+            content[0] = .{
+                .type = .text,
+                .text = prompt,
+            };
+            return .{
+                .user_input = .{
+                    .content = content,
+                },
+            };
+        },
+        .tool_result => |tool_result| {
+            return .{
+                .function_result = .{
+                    .name = tool_result.tool_name,
+                    .call_id = tool_result.id,
+                    .result = tool_result.result,
+                },
+            };
+        },
+    }
+}
+
 test "toGoogleTool conversion" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -118,3 +144,30 @@ test "toGoogleTool with no parameters" {
     try std.testing.expect(google_tool.function.parameters.properties == null);
     try std.testing.expect(google_tool.function.parameters.required == null);
 }
+
+test "toGoogleStep conversion" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const prompt_step = llm.types.Step{
+        .prompt = "Hello, world!",
+    };
+    const google_prompt = try toGoogleStep(arena_allocator, prompt_step);
+    try std.testing.expectEqualStrings("Hello, world!", google_prompt.user_input.content[0].text.?);
+    try std.testing.expect(google_prompt.user_input.content[0].type == api.Content.Type.text);
+
+    const tool_step = llm.types.Step{
+        .tool_result = .{
+            .tool_name = "test_tool",
+            .id = "call_123",
+            .result = "success",
+        },
+    };
+    const google_tool = try toGoogleStep(arena_allocator, tool_step);
+    try std.testing.expectEqualStrings("test_tool", google_tool.function_result.name);
+    try std.testing.expectEqualStrings("call_123", google_tool.function_result.call_id);
+    try std.testing.expectEqualStrings("success", google_tool.function_result.result);
+}
+

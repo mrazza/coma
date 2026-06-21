@@ -71,32 +71,9 @@ fn MakeProvider(comptime ClientType: type) type {
             defer allocator.free(str_uri);
             const uri = std.Uri.parse(str_uri) catch return ProviderError.BadUri;
 
-            var google_input: []api.CreateInteractionRequest.Step = try allocator.alloc(api.CreateInteractionRequest.Step, input.len);
-            defer allocator.free(google_input);
+            const google_input: []api.CreateInteractionRequest.Step = try arena_allocator.alloc(api.CreateInteractionRequest.Step, input.len);
             for (input, 0..) |step, i| {
-                switch (step) {
-                    .prompt => |prompt| {
-                        google_input[i] = .{
-                            .user_input = .{
-                                .content = &.{
-                                    .{
-                                        .type = .text,
-                                        .text = prompt,
-                                    },
-                                },
-                            },
-                        };
-                    },
-                    .tool_result => |tool_result| {
-                        google_input[i] = .{
-                            .function_result = .{
-                                .name = tool_result.tool_name,
-                                .call_id = tool_result.id,
-                                .result = tool_result.result,
-                            },
-                        };
-                    },
-                }
+                google_input[i] = try converter.toGoogleStep(arena_allocator, step);
             }
 
             const request_payload: api.CreateInteractionRequest = .{
