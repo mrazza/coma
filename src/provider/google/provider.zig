@@ -93,9 +93,8 @@ const testing = @import("testing");
 
 test "Gemini initialization and deinitialization" {
     const allocator = std.testing.allocator;
-    const expectations = [_]testing.MockHttpClient.RequestExpectation{};
     const mock_client: testing.MockHttpClient = .{
-        .expectations = &expectations,
+        .expectations = &.{},
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
@@ -120,20 +119,18 @@ test "Gemini.listModels success" {
         \\}
     ;
 
-    const expectations = [_]testing.MockHttpClient.RequestExpectation{
-        .{
-            .expected_scheme = "https",
-            .expected_host = "generativelanguage.googleapis.com",
-            .expected_path = "/v1beta/models",
-            .expected_query = "key=TEST_API_KEY",
-            .expected_method = .GET,
-            .response_status = .ok,
-            .response_body = response_json,
-        },
-    };
-
     const mock_client: testing.MockHttpClient = .{
-        .expectations = &expectations,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/models",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .GET,
+                .response_status = .ok,
+                .response_body = response_json,
+            },
+        },
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
@@ -151,20 +148,18 @@ test "Gemini.listModels success" {
 test "Gemini.listModels HTTP failure" {
     const allocator = std.testing.allocator;
 
-    const expectations = [_]testing.MockHttpClient.RequestExpectation{
-        .{
-            .expected_scheme = "https",
-            .expected_host = "generativelanguage.googleapis.com",
-            .expected_path = "/v1beta/models",
-            .expected_query = "key=TEST_API_KEY",
-            .expected_method = .GET,
-            .response_status = .internal_server_error,
-            .response_body = "",
-        },
-    };
-
     const mock_client: testing.MockHttpClient = .{
-        .expectations = &expectations,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/models",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .GET,
+                .response_status = .internal_server_error,
+                .response_body = "",
+            },
+        },
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
@@ -204,22 +199,20 @@ test "Gemini.executeStep success" {
         \\}
     ;
 
-    const expectations = [_]testing.MockHttpClient.RequestExpectation{
-        .{
-            .expected_scheme = "https",
-            .expected_host = "generativelanguage.googleapis.com",
-            .expected_path = "/v1beta/interactions",
-            .expected_query = "key=TEST_API_KEY",
-            .expected_method = .POST,
-            .expected_payload = expected_payload,
-            .response_status = .ok,
-            .response_body = response_json,
-        },
-    };
     var call_counts = [_]usize{0};
-
     const mock_client = testing.MockHttpClient{
-        .expectations = &expectations,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = expected_payload,
+                .response_status = .ok,
+                .response_body = response_json,
+            },
+        },
         .sequential = false,
         .call_counts = &call_counts,
     };
@@ -288,32 +281,30 @@ test "Gemini.executeStep with previous step" {
         \\}
     ;
 
-    const expectations = [_]testing.MockHttpClient.RequestExpectation{
-        .{
-            .expected_scheme = "https",
-            .expected_host = "generativelanguage.googleapis.com",
-            .expected_path = "/v1beta/interactions",
-            .expected_query = "key=TEST_API_KEY",
-            .expected_method = .POST,
-            .expected_payload = payload1,
-            .response_status = .ok,
-            .response_body = response1,
-        },
-        .{
-            .expected_scheme = "https",
-            .expected_host = "generativelanguage.googleapis.com",
-            .expected_path = "/v1beta/interactions",
-            .expected_query = "key=TEST_API_KEY",
-            .expected_method = .POST,
-            .expected_payload = payload2,
-            .response_status = .ok,
-            .response_body = response2,
-        },
-    };
     var call_counts = [_]usize{ 0, 0 };
-
     const mock_client = testing.MockHttpClient{
-        .expectations = &expectations,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = payload1,
+                .response_status = .ok,
+                .response_body = response1,
+            },
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = payload2,
+                .response_status = .ok,
+                .response_body = response2,
+            },
+        },
         .sequential = true,
         .call_counts = &call_counts,
     };
@@ -369,22 +360,20 @@ test "Gemini.executeStep with tools" {
         \\}
     ;
 
-    const expectations = [_]testing.MockHttpClient.RequestExpectation{
-        .{
-            .expected_scheme = "https",
-            .expected_host = "generativelanguage.googleapis.com",
-            .expected_path = "/v1beta/interactions",
-            .expected_query = "key=TEST_API_KEY",
-            .expected_method = .POST,
-            .expected_payload = expected_payload,
-            .response_status = .ok,
-            .response_body = response_json,
-        },
-    };
     var call_counts = [_]usize{0};
-
     const mock_client = testing.MockHttpClient{
-        .expectations = &expectations,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = expected_payload,
+                .response_status = .ok,
+                .response_body = response_json,
+            },
+        },
         .sequential = false,
         .call_counts = &call_counts,
     };
@@ -422,20 +411,18 @@ test "Gemini.executeStep with tools" {
 test "Gemini.executeStep HTTP failure" {
     const allocator = std.testing.allocator;
 
-    const expectations = [_]testing.MockHttpClient.RequestExpectation{
-        .{
-            .expected_scheme = "https",
-            .expected_host = "generativelanguage.googleapis.com",
-            .expected_path = "/v1beta/interactions",
-            .expected_query = "key=TEST_API_KEY",
-            .expected_method = .POST,
-            .response_status = .internal_server_error,
-            .response_body = "",
-        },
-    };
-
     const mock_client: testing.MockHttpClient = .{
-        .expectations = &expectations,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .response_status = .internal_server_error,
+                .response_body = "",
+            },
+        },
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
@@ -452,5 +439,3 @@ test "Gemini.executeStep HTTP failure" {
 
     try std.testing.expectError(error.HttpRequestFailed, p.executeStep(allocator, config, input, null));
 }
-
-
