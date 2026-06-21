@@ -16,21 +16,23 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
-    // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
     // in this directory.
-
-    const testing = b.addModule("testing", .{
-        .root_source_file = b.path("src/testing/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
 
     const llm = b.addModule("llm", .{
         .root_source_file = b.path("src/llm/root.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const testing = b.addModule("testing", .{
+        .root_source_file = b.path("src/testing/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "llm", .module = llm },
+        },
     });
 
     const provider = b.addModule("provider", .{
@@ -170,8 +172,17 @@ pub fn build(b: *std.Build) void {
     const run_provider_tests = b.addRunArtifact(provider_tests);
 
     // Creates an executable that will run `test` blocks from the llm module.
+    const llm_test_module = b.createModule(.{
+        .root_source_file = b.path("src/llm/test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "llm", .module = llm },
+            .{ .name = "testing", .module = testing },
+        },
+    });
     const llm_tests = b.addTest(.{
-        .root_module = llm,
+        .root_module = llm_test_module,
     });
     const run_llm_tests = b.addRunArtifact(llm_tests);
 
