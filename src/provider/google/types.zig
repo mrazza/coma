@@ -4,12 +4,16 @@ const api = @import("api.zig");
 
 const Allocator = std.mem.Allocator;
 
+/// A Gemini-specific implementation of the `llm.types.ListModelsResult` interface.
+/// Represents the result of a request to list Gemini models.
 pub const ListModelsResult = struct {
     models: []const llm.types.Model,
 
     allocator: Allocator,
     parsed_response: std.json.Parsed(api.ListModelsResponse),
 
+    /// Initializes a new ListModelsResult by parsing the raw API response and returns a
+    /// reference to this struct via the `llm.types.ListModelsResult` interface.
     pub fn init(allocator: Allocator, parsed_response: std.json.Parsed(api.ListModelsResponse)) !llm.types.ListModelsResult {
         const self = try allocator.create(ListModelsResult);
         errdefer allocator.destroy(self);
@@ -32,6 +36,7 @@ pub const ListModelsResult = struct {
         };
     }
 
+    /// Frees resources associated with the result.
     pub fn deinit(ctx: *anyopaque) void {
         const self: *ListModelsResult = @ptrCast(@alignCast(ctx));
         const allocator = self.allocator;
@@ -42,6 +47,8 @@ pub const ListModelsResult = struct {
     }
 };
 
+/// A Gemini-specific implementation of the `llm.types.StepResult` interface.
+/// Represents the result of an interaction step with the Gemini API.
 pub const StepResult = struct {
     interaction_id: []const u8,
 
@@ -52,6 +59,8 @@ pub const StepResult = struct {
     allocator: std.mem.Allocator,
     parsed_response: std.json.Parsed(api.Interaction),
 
+    /// Initializes a new StepResult by parsing the raw interaction response and returns a
+    /// reference to this struct via the `llm.types.StepResult` interface.
     pub fn init(allocator: std.mem.Allocator, parsed_response: std.json.Parsed(api.Interaction)) !llm.types.StepResult {
         var model_output_list: std.ArrayList(llm.types.StepResult.ModelOutput) = .empty;
         errdefer model_output_list.deinit(allocator);
@@ -118,6 +127,7 @@ pub const StepResult = struct {
         };
     }
 
+    /// Frees resources associated with the result.
     pub fn deinit(ctx: *anyopaque) void {
         const self: *StepResult = @ptrCast(@alignCast(ctx));
         const allocator = self.allocator;

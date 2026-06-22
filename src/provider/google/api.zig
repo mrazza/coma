@@ -1,6 +1,9 @@
 const std = @import("std");
 
+/// The response format for listing available Gemini models.
 pub const ListModelsResponse = struct { models: []GeminiModel, nextPageToken: ?[]const u8 = null };
+
+/// Represents a single Gemini model returned by the API.
 pub const GeminiModel = struct {
     name: []const u8,
     version: []const u8,
@@ -16,6 +19,7 @@ pub const GeminiModel = struct {
     thinking: ?bool = null,
 };
 
+/// Represents the Google Search tool configuration in the Gemini API.
 pub const GoogleSearch = struct {
     pub fn jsonStringify(_: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -34,6 +38,8 @@ fn jsonStringifyFields(object: anytype, jw: anytype) !void {
         try jw.write(value);
     }
 }
+
+/// Represents a function tool that the LLM can call.
 pub const Function = struct {
     pub const Parameters = struct {
         pub const StandardProperty = struct {
@@ -127,6 +133,8 @@ pub const Function = struct {
         try jw.endObject();
     }
 };
+
+/// A tool that can be provided to the Gemini API.
 pub const Tool = union(enum) {
     function: Function,
     google_search: GoogleSearch,
@@ -140,15 +148,18 @@ pub const Tool = union(enum) {
     }
 };
 
+/// Controls how thoughts (reasoning) are summarized by the model.
 pub const ThinkingSummaries = enum {
     auto,
     none,
 };
 
+/// Configuration options for model generation.
 pub const GenerationConfig = struct {
     thinking_summaries: ThinkingSummaries = .auto,
 };
 
+/// The request payload for creating an interaction with the Gemini API.
 pub const CreateInteractionRequest = struct {
     pub const Step = union(enum) {
         pub const UserInput = struct {
@@ -184,6 +195,7 @@ pub const CreateInteractionRequest = struct {
     tools: []const Tool,
 };
 
+/// Represents a piece of content (like text) in an interaction step.
 pub const Content = struct {
     pub const Type = enum {
         text,
@@ -192,6 +204,8 @@ pub const Content = struct {
     type: Type,
     text: ?[]const u8 = null,
 };
+
+/// Represents a request from the model to execute a function.
 pub const FunctionCall = struct {
     pub const Argument = struct {
         name: []const u8,
@@ -227,11 +241,15 @@ pub const FunctionCall = struct {
         };
     }
 };
+
+/// The type of step in a Gemini interaction.
 pub const StepType = enum {
     thought,
     model_output,
     function_call,
 };
+
+/// Represents a single step in a Gemini interaction, such as a thought, output, or function call.
 pub const Step = union(StepType) {
     thought: []Content,
     model_output: []Content,
@@ -259,6 +277,8 @@ pub const Step = union(StepType) {
         };
     }
 };
+
+/// The full response from the Gemini API representing an interaction.
 pub const Interaction = struct {
     id: []const u8,
     steps: []Step,

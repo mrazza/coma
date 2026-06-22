@@ -1,23 +1,40 @@
 const std = @import("std");
 
+/// A mock HTTP client used for testing.
 const MockHttpClient = @This();
 
+/// Represents an expected HTTP request and its corresponding mock response.
 pub const RequestExpectation = struct {
+    /// The expected URI scheme (e.g., "https").
     expected_scheme: []const u8,
+    /// The expected host name.
     expected_host: []const u8,
+    /// The expected URI path.
     expected_path: []const u8,
+    /// The expected URI query string, if any.
     expected_query: ?[]const u8 = null,
+    /// The expected HTTP method.
     expected_method: std.http.Method,
+    /// The expected request payload, if any.
     expected_payload: ?[]const u8 = null,
+    /// The HTTP status code to return.
     response_status: std.http.Status,
+    /// The response body to write to the response writer.
     response_body: []const u8,
 };
 
+/// The list of expected requests and their corresponding mock responses.
 expectations: []const RequestExpectation,
+/// If true, the client enforces that requests match `expectations` sequentially.
+/// If false, the client searches `expectations` for any matching request.
 sequential: bool = false,
+/// Optional array to track the number of times each expectation was matched.
 call_counts: ?[]usize = null,
+/// Tracks the current index when `sequential` is true.
 call_index: usize = 0,
 
+/// Verifies that the provided request options strictly match the expectation.
+/// Used when `sequential` is true.
 fn verifyExpectation(options: anytype, expectation: RequestExpectation) !void {
     // 1. Verify URI
     try std.testing.expectEqualStrings(expectation.expected_scheme, options.location.uri.scheme);
@@ -58,6 +75,8 @@ fn verifyExpectation(options: anytype, expectation: RequestExpectation) !void {
     }
 }
 
+/// Checks if the provided request options match the given expectation.
+/// Returns true if it matches, false otherwise.
 fn matchExpectation(options: anytype, expectation: RequestExpectation) bool {
     if (!std.mem.eql(u8, expectation.expected_scheme, options.location.uri.scheme)) return false;
 
@@ -97,6 +116,7 @@ fn matchExpectation(options: anytype, expectation: RequestExpectation) bool {
     return true;
 }
 
+/// Simulates an HTTP fetch operation based on the configured expectations.
 pub fn fetch(self: *MockHttpClient, options: anytype) !struct { status: std.http.Status } {
     if (self.sequential) {
         const idx = self.call_index;

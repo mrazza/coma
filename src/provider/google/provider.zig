@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 
 pub const Gemini = MakeProvider(*std.http.Client);
 
+/// Generates a Gemini provider parameterized by the underlying HTTP client type.
 fn MakeProvider(comptime ClientType: type) type {
     return struct {
         allocator: Allocator,
@@ -20,6 +21,7 @@ fn MakeProvider(comptime ClientType: type) type {
 
         const Self = @This();
 
+        /// Initializes a new instance of the Gemini provider.
         pub fn init(allocator: Allocator, http_client: ClientType, api_key: []const u8) !Self {
             return .{
                 .allocator = allocator,
@@ -30,10 +32,12 @@ fn MakeProvider(comptime ClientType: type) type {
             };
         }
 
+        /// Returns the generic `llm.Provider` interface for this Gemini instance.
         pub fn provider(self: *Self) Provider {
             return .{ .ptr = self, .vtable = &.{ .list_models = listModels, .execute_step = executeStep, .deinit = deinit } };
         }
 
+        /// Frees the resources associated with the provider, including the copied API key.
         pub fn deinit(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             self.allocator.free(self.api_key);
@@ -52,6 +56,7 @@ fn MakeProvider(comptime ClientType: type) type {
             return try gemini_types.ListModelsResult.init(allocator, response);
         }
 
+        /// Executes a single interaction step using the Gemini API.
         pub fn executeStep(ctx: *anyopaque, allocator: Allocator, session_config: llm.types.SessionConfig, input: []const llm.types.Step, previous_step: ?llm.types.StepResult) !llm.types.StepResult {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const previous_gemini_step: ?*gemini_types.StepResult = if (previous_step) |step| @ptrCast(@alignCast(step.ptr)) else null;

@@ -8,19 +8,29 @@ const StepResult = types.StepResult;
 const SessionConfig = types.SessionConfig;
 const Step = types.Step;
 
+/// A mock implementation of the `llm.Provider` interface for testing.
+const MockProvider = @This();
+
+/// Tracks the number of times `listModels` was called.
 list_models_calls: usize = 0,
+/// Tracks the number of times `executeStep` was called.
 execute_step_calls: usize = 0,
+/// Tracks the number of times `deinit` was called.
 deinit_calls: usize = 0,
 
+/// Stores the allocator used in the last method call.
 last_allocator: ?Allocator = null,
+/// Stores the session configuration from the last `executeStep` call.
 last_session_config: ?SessionConfig = null,
+/// Stores the input steps from the last `executeStep` call.
 last_input: ?[]const Step = null,
+/// Stores the previous step from the last `executeStep` call.
 last_previous_step: ?StepResult = null,
 
+/// Optional fixed result to return from `listModels`.
 list_models_result: ?(Provider.ProviderError!ListModelsResult) = null,
+/// Optional fixed result to return from `executeStep`.
 execute_step_result: ?(Provider.ProviderError!StepResult) = null,
-
-const MockProvider = @This();
 
 const vtable = Provider.VTable{
     .list_models = MockProvider.list_models,
@@ -28,6 +38,7 @@ const vtable = Provider.VTable{
     .deinit = MockProvider.deinit,
 };
 
+/// Returns the generic `llm.Provider` interface for this mock instance.
 pub fn provider(self: *MockProvider) Provider {
     return .{
         .ptr = self,
@@ -35,18 +46,22 @@ pub fn provider(self: *MockProvider) Provider {
     };
 }
 
+/// A dummy virtual table for `ListModelsResult` used by the mock.
 pub const mock_list_models_vtable = ListModelsResult.VTable{
     .deinit = dummyDeinit,
 };
 
+/// A dummy virtual table for `StepResult` used by the mock.
 pub const mock_step_vtable = StepResult.VTable{
     .deinit = dummyDeinit,
 };
 
+/// A no-op implementation of `deinit`.
 fn dummyDeinit(ptr: *anyopaque) void {
     _ = ptr;
 }
 
+/// Mock implementation of `listModels`.
 fn list_models(ptr: *anyopaque, allocator: Allocator) Provider.ProviderError!ListModelsResult {
     const self: *MockProvider = @ptrCast(@alignCast(ptr));
     self.list_models_calls += 1;
@@ -61,6 +76,7 @@ fn list_models(ptr: *anyopaque, allocator: Allocator) Provider.ProviderError!Lis
     };
 }
 
+/// Mock implementation of `executeStep`.
 fn execute_step(
     ptr: *anyopaque,
     allocator: Allocator,
@@ -86,6 +102,7 @@ fn execute_step(
     };
 }
 
+/// Mock implementation of `deinit`.
 fn deinit(ptr: *anyopaque) void {
     const self: *MockProvider = @ptrCast(@alignCast(ptr));
     self.deinit_calls += 1;

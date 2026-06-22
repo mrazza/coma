@@ -2,15 +2,22 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 
+/// The base URI for the Gemini API.
 const base_uri = "https://generativelanguage.googleapis.com";
+/// The target API version.
 const api_version = "v1beta";
 
 /// Helper struct to hold the parts of a Gemini API URI.
 pub const UriParts = struct {
+    /// The base URI of the API.
     base_uri: []const u8 = base_uri,
+    /// The API version to use.
     api_version: []const u8 = api_version,
+    /// The path components of the URI, to be joined by `/`.
     path: []const []const u8,
+    /// Optional query parameters to include in the URI.
     query_params: ?[]const []const u8 = null,
+    /// The API key for authentication.
     api_key: []const u8,
 };
 

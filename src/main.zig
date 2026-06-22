@@ -4,6 +4,9 @@ const llm = @import("llm");
 
 const coma = @import("coma");
 
+/// Loads the GEMINI_API_KEY from the environment variables.
+/// If not found, it attempts to read it from a `.env` file in the current working directory.
+/// Returns an allocated string containing the API key, or `error.ApiKeyMissing` if not found.
 fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.process.Environ.Map) ![]const u8 {
     if (environ_map.get("GEMINI_API_KEY")) |env_val| {
         return try allocator.dupe(u8, env_val);
@@ -37,6 +40,8 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
     return error.ApiKeyMissing;
 }
 
+/// The main entry point of the application.
+/// Currently used for testing.
 pub fn main(init: std.process.Init) !void {
     // 1. Initialize an allocator for memory management
     const allocator = init.gpa;

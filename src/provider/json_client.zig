@@ -7,12 +7,14 @@ const Allocator = std.mem.Allocator;
 pub const JsonHttpClient = MakeJsonClient(*std.http.Client);
 pub const MockJsonClient = MakeJsonClient(testing.MockHttpClient);
 
+/// Generates a JSON HTTP client wrapper parameterized by the underlying HTTP client type.
 pub fn MakeJsonClient(comptime ClientType: type) type {
     return struct {
         http_client: ClientType,
 
         const Self = @This();
 
+        /// Sends an HTTP GET request to the specified URI and parses the JSON response.
         pub fn getRequest(self: *Self, allocator: Allocator, comptime ResponseType: type, uri: std.Uri) !std.json.Parsed(ResponseType) {
             var response_buffer = std.Io.Writer.Allocating.init(allocator);
             defer response_buffer.deinit();
@@ -31,6 +33,8 @@ pub fn MakeJsonClient(comptime ClientType: type) type {
             }
         }
 
+        /// Sends an HTTP POST request to the specified URI with a JSON-serialized payload
+        /// and parses the JSON response.
         pub fn postRequest(
             self: *Self,
             allocator: Allocator,

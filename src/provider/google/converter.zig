@@ -4,6 +4,7 @@ const api = @import("api.zig");
 
 const Allocator = std.mem.Allocator;
 
+/// Converts a generic `llm.types.Tool` into a Gemini API-specific `api.Tool`.
 pub fn toGoogleTool(arena: Allocator, tool: llm.types.Tool) !api.Tool {
     const properties = if (tool.parameters.len > 0) try arena.alloc(api.Function.Parameters.Property, tool.parameters.len) else null;
     errdefer if (properties) |p| arena.free(p);
@@ -57,6 +58,7 @@ pub fn toGoogleTool(arena: Allocator, tool: llm.types.Tool) !api.Tool {
     };
 }
 
+/// Converts a generic `llm.types.Step` into a Gemini API-specific `api.CreateInteractionRequest.Step`.
 pub fn toGoogleStep(arena: Allocator, step: llm.types.Step) !api.CreateInteractionRequest.Step {
     switch (step) {
         .prompt => |prompt| {
