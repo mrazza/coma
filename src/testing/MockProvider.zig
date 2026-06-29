@@ -15,6 +15,8 @@ const MockProvider = @This();
 list_models_calls: usize = 0,
 /// Tracks the number of times `executeStep` was called.
 execute_step_calls: usize = 0,
+/// Tracks the number of times `executeStepStreaming` was called.
+execute_step_streaming_calls: usize = 0,
 /// Tracks the number of times `deinit` was called.
 deinit_calls: usize = 0,
 
@@ -35,6 +37,7 @@ execute_step_result: ?(Provider.ProviderError!StepResult) = null,
 const vtable = Provider.VTable{
     .list_models = MockProvider.list_models,
     .execute_step = MockProvider.execute_step,
+    .execute_step_streaming = MockProvider.execute_step_streaming,
     .deinit = MockProvider.deinit,
 };
 
@@ -86,6 +89,36 @@ fn execute_step(
 ) Provider.ProviderError!StepResult {
     const self: *MockProvider = @ptrCast(@alignCast(ptr));
     self.execute_step_calls += 1;
+    self.last_allocator = allocator;
+    self.last_session_config = session_config;
+    self.last_input = input;
+    self.last_previous_step = previous_step;
+    if (self.execute_step_result) |res| {
+        return res;
+    }
+    return StepResult{
+        .model_output = &.{},
+        .thoughts = &.{},
+        .tool_calls = &.{},
+        .ptr = ptr,
+        .vtable = &mock_step_vtable,
+    };
+}
+
+/// Mock implementation of `executeStepStreaming`.
+fn execute_step_streaming(
+    ptr: *anyopaque,
+    allocator: Allocator,
+    session_config: SessionConfig,
+    input: []const Step,
+    previous_step: ?StepResult,
+    callback: types.StreamingCallback,
+    callback_context: ?*anyopaque,
+) Provider.ProviderError!StepResult {
+    const self: *MockProvider = @ptrCast(@alignCast(ptr));
+    _ = callback;
+    _ = callback_context;
+    self.execute_step_streaming_calls += 1;
     self.last_allocator = allocator;
     self.last_session_config = session_config;
     self.last_input = input;

@@ -1,5 +1,21 @@
 const std = @import("std");
 
+/// A generic JSON stringifier that iterates over the fields of a struct.
+/// It skips fields that are optional and have a null value.
+///
+/// Useful when implementing a custom json stringifier that writes additional fields before the object fields.
+/// But still needs the object fields.
+fn jsonStringifyFields(object: anytype, jw: anytype) !void {
+    inline for (std.meta.fields(@TypeOf(object))) |field| {
+        const value = @field(object, field.name);
+        if (@typeInfo(field.type) == .optional and value == null) {
+            continue;
+        }
+        try jw.objectField(field.name);
+        try jw.write(value);
+    }
+}
+
 /// The response format for listing available Gemini models.
 pub const ListModelsResponse = struct { models: []GeminiModel, nextPageToken: ?[]const u8 = null };
 
@@ -28,16 +44,6 @@ pub const GoogleSearch = struct {
         try jw.endObject();
     }
 };
-fn jsonStringifyFields(object: anytype, jw: anytype) !void {
-    inline for (std.meta.fields(@TypeOf(object))) |field| {
-        const value = @field(object, field.name);
-        if (@typeInfo(field.type) == .optional and value == null) {
-            continue;
-        }
-        try jw.objectField(field.name);
-        try jw.write(value);
-    }
-}
 
 /// Represents a function tool that the LLM can call.
 pub const Function = struct {
@@ -193,6 +199,7 @@ pub const CreateInteractionRequest = struct {
     previous_interaction_id: ?[]const u8 = null,
     generation_config: GenerationConfig = .{},
     tools: []const Tool,
+    stream: ?bool = null,
 };
 
 /// Represents a piece of content (like text) in an interaction step.
@@ -205,22 +212,38 @@ pub const Content = struct {
     text: ?[]const u8 = null,
 };
 
+/// Represents an argument to a function call.
+pub const FunctionArgument = struct {
+    name: []const u8,
+    value: []const u8,
+
+    pub fn parseFromJsonObject(allocator: std.mem.Allocator, source: std.json.Value) ![]FunctionArgument {
+        var arguments: std.ArrayList(FunctionArgument) = .empty;
+        defer arguments.deinit(allocator);
+        var argument_iterator = source.object.iterator();
+        while (argument_iterator.next()) |arg| {
+            const key = arg.key_ptr.*;
+            const value = arg.value_ptr.string;
+            try arguments.append(allocator, FunctionArgument{
+                .name = key,
+                .value = value,
+            });
+        }
+        return try arguments.toOwnedSlice(allocator);
+    }
+};
+
 /// Represents a request from the model to execute a function.
 pub const FunctionCall = struct {
-    pub const Argument = struct {
-        name: []const u8,
-        value: []const u8,
-    };
-
     id: []const u8,
     name: []const u8,
-    arguments: []Argument,
+    arguments: []FunctionArgument,
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !FunctionCall {
         const id = try std.json.innerParseFromValue([]const u8, allocator, source.object.get("id") orelse return error.MissingField, options);
         const name = try std.json.innerParseFromValue([]const u8, allocator, source.object.get("name") orelse return error.MissingField, options);
         const arguments_value = source.object.get("arguments") orelse return error.MissingField;
-        var arguments: std.ArrayList(Argument) = .empty;
+        var arguments: std.ArrayList(FunctionArgument) = .empty;
         errdefer arguments.deinit(allocator);
         var argument_iterator = arguments_value.object.iterator();
         while (argument_iterator.next()) |arg| {
@@ -229,7 +252,7 @@ pub const FunctionCall = struct {
             if (std.mem.eql(u8, key, "name") or std.mem.eql(u8, key, "id")) {
                 continue;
             }
-            try arguments.append(allocator, Argument{
+            try arguments.append(allocator, FunctionArgument{
                 .name = key,
                 .value = value,
             });
@@ -256,11 +279,16 @@ pub const Step = union(StepType) {
     function_call: FunctionCall,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Step {
-        const json_value: std.json.Value = try std.json.innerParse(std.json.Value, allocator, source, options);
-        const step_type = try std.json.innerParseFromValue(StepType, allocator, json_value.object.get("type") orelse return error.MissingField, options);
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !Step {
+        if (source != .object) return error.UnexpectedToken;
+        const step_type = try std.json.innerParseFromValue(StepType, allocator, source.object.get("type") orelse return error.MissingField, options);
         return switch (step_type) {
             .thought => {
-                if (json_value.object.get("summary")) |summary| {
+                if (source.object.get("summary")) |summary| {
                     return Step{
                         .thought = try std.json.innerParseFromValue([]Content, allocator, summary, options),
                     };
@@ -268,11 +296,17 @@ pub const Step = union(StepType) {
                     return Step{ .thought = &.{} };
                 }
             },
-            .model_output => Step{
-                .model_output = try std.json.innerParseFromValue([]Content, allocator, json_value.object.get("content") orelse return error.MissingField, options),
+            .model_output => {
+                if (source.object.get("content")) |content| {
+                    return Step{
+                        .model_output = try std.json.innerParseFromValue([]Content, allocator, content, options),
+                    };
+                } else {
+                    return Step{ .model_output = &.{} };
+                }
             },
             .function_call => Step{
-                .function_call = try std.json.innerParseFromValue(FunctionCall, allocator, json_value, options),
+                .function_call = try std.json.innerParseFromValue(FunctionCall, allocator, source, options),
             },
         };
     }
@@ -283,3 +317,242 @@ pub const Interaction = struct {
     id: []const u8,
     steps: []Step,
 };
+
+pub const StreamingInteraction = struct {
+    id: []const u8,
+};
+
+pub const InteractionCreatedEvent = struct {
+    interaction: StreamingInteraction,
+};
+
+pub const InteractionStatusUpdate = struct {
+    interaction_id: []const u8,
+};
+
+pub const InteractionStepStartEvent = struct {
+    index: u32,
+    step: Step,
+};
+
+pub const TextDelta = Content;
+
+pub const ThoughtSummaryDelta = struct {
+    content: Content,
+};
+
+pub const ArgumentsDelta = struct {
+    arguments: []const u8,
+};
+
+pub const InteractionStepDelta = union(enum) {
+    text_delta: TextDelta,
+    thought_summary: ThoughtSummaryDelta,
+    arguments_delta: ArgumentsDelta,
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !InteractionStepDelta {
+        if (source != .object) return error.UnexpectedToken;
+        const delta_type = source.object.get("type") orelse return error.MissingField;
+        if (delta_type != .string) return error.UnexpectedToken;
+        const type_str = delta_type.string;
+        if (std.mem.eql(u8, type_str, "text")) {
+            return InteractionStepDelta{
+                .text_delta = try std.json.innerParseFromValue(TextDelta, allocator, source, options),
+            };
+        } else if (std.mem.eql(u8, type_str, "thought_summary")) {
+            return InteractionStepDelta{
+                .thought_summary = try std.json.innerParseFromValue(ThoughtSummaryDelta, allocator, source, options),
+            };
+        } else if (std.mem.eql(u8, type_str, "arguments_delta")) {
+            return InteractionStepDelta{
+                .arguments_delta = try std.json.innerParseFromValue(ArgumentsDelta, allocator, source, options),
+            };
+        } else {
+            return error.InvalidEnumTag;
+        }
+    }
+};
+
+pub const InteractionStepDeltaEvent = struct {
+    index: u32,
+    delta: InteractionStepDelta,
+};
+
+pub const InteractionStepStopEvent = struct {
+    index: u32,
+};
+
+pub const InteractionCompletedEvent = struct {
+    interaction: StreamingInteraction,
+};
+
+pub const InteractionStreamEvent = union(enum) {
+    interaction_created: InteractionCreatedEvent,
+    interaction_status_update: InteractionStatusUpdate,
+    step_start: InteractionStepStartEvent,
+    step_delta: InteractionStepDeltaEvent,
+    step_stop: InteractionStepStopEvent,
+    interaction_completed: InteractionCompletedEvent,
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !InteractionStreamEvent {
+        const json_value: std.json.Value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        const event_type_value = json_value.object.get("event_type") orelse return error.MissingField;
+        const event_type = event_type_value.string;
+        if (std.mem.eql(u8, event_type, "interaction.created")) {
+            return InteractionStreamEvent{
+                .interaction_created = try std.json.innerParseFromValue(InteractionCreatedEvent, allocator, json_value, options),
+            };
+        } else if (std.mem.eql(u8, event_type, "interaction.status_update")) {
+            return InteractionStreamEvent{
+                .interaction_status_update = try std.json.innerParseFromValue(InteractionStatusUpdate, allocator, json_value, options),
+            };
+        } else if (std.mem.eql(u8, event_type, "step.start")) {
+            return InteractionStreamEvent{
+                .step_start = try std.json.innerParseFromValue(InteractionStepStartEvent, allocator, json_value, options),
+            };
+        } else if (std.mem.eql(u8, event_type, "step.delta")) {
+            return InteractionStreamEvent{
+                .step_delta = try std.json.innerParseFromValue(InteractionStepDeltaEvent, allocator, json_value, options),
+            };
+        } else if (std.mem.eql(u8, event_type, "step.stop")) {
+            return InteractionStreamEvent{
+                .step_stop = try std.json.innerParseFromValue(InteractionStepStopEvent, allocator, json_value, options),
+            };
+        } else if (std.mem.eql(u8, event_type, "interaction.completed")) {
+            return InteractionStreamEvent{
+                .interaction_completed = try std.json.innerParseFromValue(InteractionCompletedEvent, allocator, json_value, options),
+            };
+        } else {
+            return error.UnexpectedToken;
+        }
+    }
+};
+
+test "InteractionStreamEvent jsonParse interaction.created" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"event_type\": \"interaction.created\", \"interaction\": { \"id\": \"test-interaction-id\" } }";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .interaction_created);
+    try std.testing.expectEqualStrings("test-interaction-id", interaction_event.interaction_created.interaction.id);
+}
+
+test "InteractionStreamEvent jsonParse interaction.status_update" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"event_type\": \"interaction.status_update\", \"interaction_id\": \"test-interaction-id\" }";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .interaction_status_update);
+    try std.testing.expectEqualStrings("test-interaction-id", interaction_event.interaction_status_update.interaction_id);
+}
+
+test "InteractionStreamEvent jsonParse step.start model_output" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"index\": 0, \"step\": {\"type\": \"model_output\"}, \"event_type\": \"step.start\" }";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .step_start);
+    try std.testing.expectEqual(0, interaction_event.step_start.index);
+    try std.testing.expect(interaction_event.step_start.step == .model_output);
+}
+
+test "InteractionStreamEvent jsonParse step.start function_call" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"index\": 0, \"step\": {\"type\": \"function_call\", \"id\":\"un6k8t18\", \"name\": \"get_weather\", \"arguments\":{}}, \"event_type\": \"step.start\" }";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .step_start);
+    try std.testing.expectEqual(0, interaction_event.step_start.index);
+    try std.testing.expect(interaction_event.step_start.step == .function_call);
+    const function_call_step = interaction_event.step_start.step.function_call;
+    try std.testing.expectEqualStrings("un6k8t18", function_call_step.id);
+    try std.testing.expectEqualStrings("get_weather", function_call_step.name);
+    try std.testing.expectEqual(0, function_call_step.arguments.len);
+}
+
+test "InteractionStreamEvent jsonParse step.start thought" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"index\":0, \"step\":{\"type\":\"thought\"}, \"event_type\":\"step.start\" }";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .step_start);
+    try std.testing.expectEqual(0, interaction_event.step_start.index);
+    try std.testing.expect(interaction_event.step_start.step == .thought);
+}
+
+test "InteractionStreamEvent jsonParse step.delta model_output" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"index\": 0, \"delta\": {\"type\": \"text\", \"text\": \"Hello, my name is Phil\"}, \"event_type\": \"step.delta\" }";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .step_delta);
+    const step_delta = interaction_event.step_delta;
+    try std.testing.expectEqual(0, step_delta.index);
+    try std.testing.expect(step_delta.delta == .text_delta);
+    try std.testing.expectEqualStrings("Hello, my name is Phil", step_delta.delta.text_delta.text.?);
+}
+
+test "InteractionStreamEvent jsonParse step.delta function_call" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"index\": 0, \"delta\": {\"type\": \"arguments_delta\", \"arguments\": \"{\\\"location\\\": \\\"San Francisco, CA\\\"}\"}, \"event_type\": \"step.delta\" }";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .step_delta);
+    const step_delta = interaction_event.step_delta;
+    try std.testing.expectEqual(0, step_delta.index);
+    try std.testing.expect(step_delta.delta == .arguments_delta);
+    try std.testing.expectEqualStrings("{\"location\": \"San Francisco, CA\"}", step_delta.delta.arguments_delta.arguments);
+}
+
+test "InteractionStreamEvent jsonParse step.delta thought" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"index\": 0, \"delta\": {\"type\": \"thought_summary\", \"content\": {\"type\": \"text\", \"text\": \"I need to find the GCD...\"}}, \"event_type\": \"step.delta\" }";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .step_delta);
+    const step_delta = interaction_event.step_delta;
+    try std.testing.expectEqual(0, step_delta.index);
+    try std.testing.expect(step_delta.delta == .thought_summary);
+    try std.testing.expectEqualStrings("I need to find the GCD...", step_delta.delta.thought_summary.content.text.?);
+}
+
+test "InteractionStreamEvent jsonParse step.stop" {
+    const allocator = std.testing.allocator;
+    const payload = "{\"index\": 0, \"event_type\": \"step.stop\"}";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .step_stop);
+    try std.testing.expectEqual(0, interaction_event.step_stop.index);
+}
+
+test "InteractionStreamEvent jsonParse interaction.completed" {
+    const allocator = std.testing.allocator;
+    const payload = "{\"interaction\": {\"id\": \"v1_abc123\", \"status\": \"completed\", \"usage\": {\"total_input_tokens\": 7, \"total_output_tokens\": 12, \"total_tokens\": 19}}, \"event_type\": \"interaction.completed\"}";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .interaction_completed);
+    try std.testing.expectEqualStrings("v1_abc123", interaction_event.interaction_completed.interaction.id);
+}
+
+test "FunctionArgument parseFromJsonObject" {
+    const allocator = std.testing.allocator;
+    const payload = "{\"location\": \"San Francisco, CA\", \"date\": \"2026-06-28\"}";
+    const json_value = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer json_value.deinit();
+    const function_arguments = try FunctionArgument.parseFromJsonObject(allocator, json_value.value);
+    defer allocator.free(function_arguments);
+    try std.testing.expectEqualStrings("location", function_arguments[0].name);
+    try std.testing.expectEqualStrings("San Francisco, CA", function_arguments[0].value);
+    try std.testing.expectEqualStrings("date", function_arguments[1].name);
+    try std.testing.expectEqualStrings("2026-06-28", function_arguments[1].value);
+}

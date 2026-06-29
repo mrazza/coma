@@ -23,6 +23,8 @@ pub const RequestExpectation = struct {
     response_body: []const u8,
 };
 
+/// The allocator used for mocking/testing allocations.
+allocator: std.mem.Allocator,
 /// The list of expected requests and their corresponding mock responses.
 expectations: []const RequestExpectation,
 /// If true, the client enforces that requests match `expectations` sequentially.
@@ -139,6 +141,118 @@ pub fn fetch(self: *MockHttpClient, options: anytype) !struct { status: std.http
                 }
                 _ = try options.response_writer.write(expectation.response_body);
                 return .{ .status = expectation.response_status };
+            }
+        }
+        return error.NoMatchingExpectation;
+    }
+}
+
+pub const Request = MockRequest;
+pub const Response = MockResponse;
+
+pub const MockRequest = struct {
+    client: *MockHttpClient,
+    expectation: RequestExpectation,
+    expectation_index: usize,
+    transfer_encoding: union(enum) {
+        chunked,
+        content_length: usize,
+        none,
+    } = .none,
+
+    pub fn sendBodyComplete(self: *MockRequest, payload: []const u8) !void {
+        if (self.expectation.expected_payload) |expected| {
+            try std.testing.expectEqualStrings(expected, payload);
+        } else {
+            try std.testing.expect(payload.len == 0);
+        }
+    }
+
+    pub fn receiveHead(self: *MockRequest, redirect_buffer: []const u8) !MockResponse {
+        _ = redirect_buffer;
+        if (self.client.call_counts) |counts| {
+            counts[self.expectation_index] += 1;
+        }
+        return MockResponse{
+            .head = .{
+                .status = self.expectation.response_status,
+            },
+            .r = std.Io.Reader.fixed(self.expectation.response_body),
+        };
+    }
+
+    pub fn deinit(self: *MockRequest) void {
+        _ = self;
+    }
+};
+
+pub const MockResponse = struct {
+    head: struct {
+        status: std.http.Status,
+    },
+    r: std.Io.Reader,
+
+    pub fn reader(self: *MockResponse, transfer_buffer: []u8) *std.Io.Reader {
+        _ = transfer_buffer;
+        return &self.r;
+    }
+};
+
+fn matchExpectationWithoutPayload(options: anytype, expectation: RequestExpectation) bool {
+    if (!std.mem.eql(u8, expectation.expected_scheme, options.location.uri.scheme)) return false;
+
+    if (options.location.uri.host) |host| {
+        if (!std.mem.eql(u8, expectation.expected_host, host.percent_encoded)) return false;
+    } else {
+        return false;
+    }
+
+    if (!std.mem.eql(u8, expectation.expected_path, options.location.uri.path.percent_encoded)) return false;
+
+    if (options.location.uri.query) |query| {
+        if (expectation.expected_query) |expected| {
+            if (!std.mem.eql(u8, expected, query.percent_encoded)) return false;
+        } else {
+            return false;
+        }
+    } else {
+        if (expectation.expected_query != null) return false;
+    }
+
+    const method = if (@hasField(@TypeOf(options), "method")) options.method else std.http.Method.GET;
+    if (expectation.expected_method != method) return false;
+
+    return true;
+}
+
+pub fn request(self: *MockHttpClient, method: std.http.Method, uri: std.Uri, options: anytype) !MockRequest {
+    _ = options;
+    const dummy_options = .{
+        .location = .{ .uri = uri },
+        .method = method,
+    };
+
+    if (self.sequential) {
+        const idx = self.call_index;
+        self.call_index += 1;
+        if (idx >= self.expectations.len) {
+            return error.TooManyCalls;
+        }
+        const expectation = self.expectations[idx];
+        try verifyExpectation(dummy_options, expectation);
+        return MockRequest{
+            .client = self,
+            .expectation = expectation,
+            .expectation_index = idx,
+        };
+    } else {
+        for (self.expectations, 0..) |expectation, i| {
+            if (matchExpectationWithoutPayload(dummy_options, expectation)) {
+                return MockRequest{
+                    .client = self,
+                    .expectation = expectation,
+                    .expectation_index = i,
+                };
             }
         }
         return error.NoMatchingExpectation;
