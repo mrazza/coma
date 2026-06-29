@@ -44,7 +44,7 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
 /// Currently used for testing.
 pub fn main(init: std.process.Init) !void {
     // 1. Initialize an allocator for memory management
-    const allocator = init.gpa;
+    var allocator = init.gpa;
     const io = init.io;
 
     const api_key = loadApiKey(allocator, io, init.environ_map) catch |err| {
@@ -135,8 +135,21 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        const step_result = try client.executeStep(allocator, session_config, new_steps.items, last_step);
+        const step_result = try client.executeStepStreaming(allocator, session_config, new_steps.items, last_step, struct {
+            pub fn lambda(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+                const alloc: *std.mem.Allocator = @ptrCast(@alignCast(ctx));
+                var payload_buffer: std.Io.Writer.Allocating = .init(alloc.*);
+                defer payload_buffer.deinit();
+                var stringifier = std.json.Stringify{
+                    .writer = &payload_buffer.writer,
+                    .options = .{},
+                };
+                stringifier.write(chunk.event) catch return;
+                std.debug.print("Chunk: {s}\n", .{payload_buffer.written()});
+            }
+        }.lambda, &allocator);
         errdefer step_result.deinit();
+
         for (last_tool_results.items) |tool_call| {
             allocator.free(tool_call.result);
         }

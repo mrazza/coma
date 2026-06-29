@@ -14,6 +14,25 @@ pub fn MakeJsonClient(comptime ClientType: type) type {
 
         const Self = @This();
 
+        pub const StreamingResponse = struct {
+            const ClientStructType = if (@typeInfo(ClientType) == .pointer) std.meta.Child(ClientType) else ClientType;
+
+            request: ClientStructType.Request,
+            response: ClientStructType.Response,
+            transfer_buffer: [1024]u8 = undefined,
+
+            pub fn deinit(self: *StreamingResponse) void {
+                self.request.deinit();
+            }
+
+            pub fn reader(self: *StreamingResponse) *std.Io.Reader {
+                if (@hasField(ClientStructType.Response, "request")) {
+                    self.response.request = &self.request;
+                }
+                return self.response.reader(&self.transfer_buffer);
+            }
+        };
+
         /// Sends an HTTP GET request to the specified URI and parses the JSON response.
         pub fn getRequest(self: *Self, allocator: Allocator, comptime ResponseType: type, uri: std.Uri) !std.json.Parsed(ResponseType) {
             var response_buffer = std.Io.Writer.Allocating.init(allocator);
@@ -47,7 +66,7 @@ pub fn MakeJsonClient(comptime ClientType: type) type {
             defer payload_buffer.deinit();
             var stringifier = std.json.Stringify{
                 .writer = &payload_buffer.writer,
-                .options = .{},
+                .options = .{ .emit_null_optional_fields = false },
             };
             try stringifier.write(request);
             var response_buffer: std.Io.Writer.Allocating = .init(allocator);
@@ -72,6 +91,50 @@ pub fn MakeJsonClient(comptime ClientType: type) type {
                 return error.HttpRequestFailed;
             }
         }
+
+        /// Sends an HTTP POST request to the specified URI with a JSON-serialized payload
+        /// and returns a StreamingResponseReader to incrementally read the response.
+        ///
+        /// Note, given the incrementality the response is streamed raw and the caller must JSON
+        /// deserialize it.
+        pub fn postRequestStreaming(
+            self: *Self,
+            allocator: Allocator,
+            comptime RequestType: type,
+            uri: std.Uri,
+            request: RequestType,
+        ) !StreamingResponse {
+            var payload_buffer: std.Io.Writer.Allocating = .init(allocator);
+            defer payload_buffer.deinit();
+            var stringifier = std.json.Stringify{
+                .writer = &payload_buffer.writer,
+                .options = .{},
+            };
+            try stringifier.write(request);
+
+            var req = try self.http_client.request(.POST, uri, .{
+                .headers = .{
+                    .content_type = .{ .override = "application/json" },
+                    .accept_encoding = .{ .override = "identity" },
+                },
+            });
+            errdefer req.deinit();
+
+            req.transfer_encoding = .{ .content_length = payload_buffer.written().len };
+            try req.sendBodyComplete(payload_buffer.written());
+
+            var redirect_buffer: [8000]u8 = undefined;
+            var response = try req.receiveHead(&redirect_buffer);
+
+            if (response.head.status.class() != .success) {
+                return error.HttpRequestFailed;
+            }
+
+            return .{
+                .request = req,
+                .response = response,
+            };
+        }
     };
 }
 
@@ -85,6 +148,7 @@ test "getRequest success" {
     };
 
     const mock_client: testing.MockHttpClient = .{
+        .allocator = allocator,
         .expectations = &.{
             .{
                 .expected_scheme = "https",
@@ -117,6 +181,7 @@ test "getRequest failure" {
     };
 
     const mock_client: testing.MockHttpClient = .{
+        .allocator = allocator,
         .expectations = &.{
             .{
                 .expected_scheme = "https",
@@ -147,6 +212,7 @@ test "postRequest success" {
     };
 
     const mock_client: testing.MockHttpClient = .{
+        .allocator = allocator,
         .expectations = &.{
             .{
                 .expected_scheme = "https",
@@ -183,6 +249,7 @@ test "postRequest failure" {
     };
 
     const mock_client: testing.MockHttpClient = .{
+        .allocator = allocator,
         .expectations = &.{
             .{
                 .expected_scheme = "https",
@@ -201,4 +268,70 @@ test "postRequest failure" {
     const request = RequestPayload{ .input = "hello" };
 
     try std.testing.expectError(error.HttpRequestFailed, rpc_client.postRequest(allocator, RequestPayload, Response, uri, request));
+}
+
+test "postRequestStreaming success" {
+    const allocator = std.testing.allocator;
+    const uri = try std.Uri.parse("https://example.com/stream");
+
+    const RequestPayload = struct {
+        input: []const u8,
+    };
+
+    const mock_client: testing.MockHttpClient = .{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/stream",
+                .expected_method = .POST,
+                .expected_payload = "{\"input\":\"stream-test\"}",
+                .response_status = .ok,
+                .response_body = "chunk1\nchunk2\n",
+            },
+        },
+    };
+
+    var rpc_client: MockJsonClient = .{ .http_client = mock_client };
+
+    const request = RequestPayload{ .input = "stream-test" };
+
+    var response_reader = try rpc_client.postRequestStreaming(allocator, RequestPayload, uri, request);
+    defer response_reader.deinit();
+
+    var buf: [100]u8 = undefined;
+    const reader = response_reader.reader();
+    const bytes_read = try reader.readSliceShort(&buf);
+    try std.testing.expectEqualStrings("chunk1\nchunk2\n", buf[0..bytes_read]);
+}
+
+test "postRequestStreaming failure" {
+    const allocator = std.testing.allocator;
+    const uri = try std.Uri.parse("https://example.com/stream");
+
+    const RequestPayload = struct {
+        input: []const u8,
+    };
+
+    const mock_client: testing.MockHttpClient = .{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/stream",
+                .expected_method = .POST,
+                .expected_payload = "{\"input\":\"stream-test\"}",
+                .response_status = .internal_server_error,
+                .response_body = "",
+            },
+        },
+    };
+
+    var rpc_client: MockJsonClient = .{ .http_client = mock_client };
+
+    const request = RequestPayload{ .input = "stream-test" };
+
+    try std.testing.expectError(error.HttpRequestFailed, rpc_client.postRequestStreaming(allocator, RequestPayload, uri, request));
 }

@@ -99,7 +99,7 @@ test "Provider.executeStep returns custom success and error" {
     // Test custom success
     {
         var mock_impl = testing.MockProvider{};
-        const dummy_outputs = &[_]llm.types.StepResult.ModelOutput{
+        const dummy_outputs = &[_]llm.types.ModelOutput{
             .{ .text = "custom-output" },
         };
         mock_impl.execute_step_result = llm.types.StepResult{
@@ -127,3 +127,92 @@ test "Provider.executeStep returns custom success and error" {
         try std.testing.expectError(error.HttpRequestFailed, prov.executeStep(allocator, session_config, &.{}, null));
     }
 }
+
+test "Provider.executeStepStreaming delegates to VTable" {
+    const allocator = std.testing.allocator;
+    var mock_impl = testing.MockProvider{};
+    var prov = mock_impl.provider();
+
+    const model = llm.types.Model{
+        .id = "test-model-id",
+        .display_name = "Test Model",
+    };
+    const session_config = llm.types.SessionConfig{
+        .model = model,
+        .tools = &.{},
+    };
+    const input_steps = &[_]llm.types.Step{
+        .{ .prompt = "hello" },
+    };
+
+    const prev_result = llm.types.StepResult{
+        .model_output = &.{},
+        .thoughts = &.{},
+        .tool_calls = &.{},
+        .ptr = &mock_impl,
+        .vtable = &testing.MockProvider.mock_step_vtable,
+    };
+
+    const CallbackState = struct {
+        fn callback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            _ = ctx;
+            _ = chunk;
+        }
+    };
+
+    var result = try prov.executeStepStreaming(allocator, session_config, input_steps, prev_result, CallbackState.callback, null);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_streaming_calls);
+    try std.testing.expectEqual(@as(usize, 0), mock_impl.execute_step_calls);
+    try std.testing.expectEqual(allocator, mock_impl.last_allocator.?);
+    try std.testing.expectEqualStrings("test-model-id", mock_impl.last_session_config.?.model.id);
+    try std.testing.expectEqualStrings("hello", mock_impl.last_input.?[0].prompt);
+    try std.testing.expectEqual(prev_result.vtable, mock_impl.last_previous_step.?.vtable);
+    try std.testing.expectEqual(prev_result.ptr, mock_impl.last_previous_step.?.ptr);
+}
+
+test "Provider.executeStepStreaming returns custom success and error" {
+    const allocator = std.testing.allocator;
+    const model = llm.types.Model{ .id = "id", .display_name = "name" };
+    const session_config = llm.types.SessionConfig{ .model = model, .tools = &.{} };
+
+    const CallbackState = struct {
+        fn callback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            _ = ctx;
+            _ = chunk;
+        }
+    };
+
+    // Test custom success
+    {
+        var mock_impl = testing.MockProvider{};
+        const dummy_outputs = &[_]llm.types.ModelOutput{
+            .{ .text = "custom-output" },
+        };
+        mock_impl.execute_step_result = llm.types.StepResult{
+            .model_output = dummy_outputs,
+            .thoughts = &.{},
+            .tool_calls = &.{},
+            .ptr = &mock_impl,
+            .vtable = &testing.MockProvider.mock_step_vtable,
+        };
+
+        var prov = mock_impl.provider();
+        var result = try prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null);
+        defer result.deinit();
+
+        try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_streaming_calls);
+        try std.testing.expectEqualStrings("custom-output", result.model_output[0].text);
+    }
+
+    // Test custom error
+    {
+        var mock_impl = testing.MockProvider{};
+        mock_impl.execute_step_result = error.HttpRequestFailed;
+
+        var prov = mock_impl.provider();
+        try std.testing.expectError(error.HttpRequestFailed, prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null));
+    }
+}
+
