@@ -15,7 +15,104 @@ const color_yellow = "\x1b[33m";
 const StreamContext = struct {
     allocator: std.mem.Allocator,
     current_type: ?llm.types.StepType = null,
+    in_code_block: bool = false,
+    in_inline_code: bool = false,
+    in_bold: bool = false,
+    in_italic: bool = false,
+    backtick_count: u8 = 0,
+    asterisk_count: u8 = 0,
 };
+
+fn restoreStyle(stream_ctx: *StreamContext) void {
+    if (stream_ctx.in_code_block) {
+        std.debug.print("{s}", .{color_yellow});
+    } else if (stream_ctx.in_inline_code) {
+        std.debug.print("{s}", .{color_yellow});
+    } else {
+        if (stream_ctx.current_type) |t| {
+            switch (t) {
+                .thought => std.debug.print("{s}", .{color_gray}),
+                .model_output => std.debug.print("{s}", .{color_reset}),
+                .tool_call => std.debug.print("{s}", .{color_yellow}),
+            }
+        }
+    }
+}
+
+fn flushBackticks(stream_ctx: *StreamContext) void {
+    const count = stream_ctx.backtick_count;
+    if (count == 0) return;
+    stream_ctx.backtick_count = 0;
+    if (count == 3) {
+        stream_ctx.in_code_block = !stream_ctx.in_code_block;
+        if (stream_ctx.in_code_block) {
+            std.debug.print("{s}", .{color_yellow});
+        } else {
+            std.debug.print("{s}", .{color_reset});
+            restoreStyle(stream_ctx);
+        }
+    } else if (count == 1) {
+        stream_ctx.in_inline_code = !stream_ctx.in_inline_code;
+        if (stream_ctx.in_inline_code) {
+            std.debug.print("{s}", .{color_yellow});
+        } else {
+            std.debug.print("{s}", .{color_reset});
+            restoreStyle(stream_ctx);
+        }
+    } else {
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            std.debug.print("`", .{});
+        }
+    }
+}
+
+fn flushAsterisks(stream_ctx: *StreamContext) void {
+    const count = stream_ctx.asterisk_count;
+    if (count == 0) return;
+    stream_ctx.asterisk_count = 0;
+    if (count == 2) {
+        stream_ctx.in_bold = !stream_ctx.in_bold;
+        if (stream_ctx.in_bold) {
+            std.debug.print("{s}", .{color_bold});
+        } else {
+            std.debug.print("{s}", .{color_reset});
+            restoreStyle(stream_ctx);
+        }
+    } else if (count == 1) {
+        stream_ctx.in_italic = !stream_ctx.in_italic;
+        if (stream_ctx.in_italic) {
+            std.debug.print("\x1b[3m", .{});
+        } else {
+            std.debug.print("\x1b[23m", .{});
+        }
+    } else {
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            std.debug.print("*", .{});
+        }
+    }
+}
+
+fn printMarkdown(stream_ctx: *StreamContext, text: []const u8) void {
+    restoreStyle(stream_ctx);
+    for (text) |char| {
+        if (char == '`') {
+            flushAsterisks(stream_ctx);
+            stream_ctx.backtick_count += 1;
+            continue;
+        }
+        if (char == '*') {
+            flushBackticks(stream_ctx);
+            stream_ctx.asterisk_count += 1;
+            continue;
+        }
+
+        flushBackticks(stream_ctx);
+        flushAsterisks(stream_ctx);
+        std.debug.print("{c}", .{char});
+    }
+}
 
 fn streamCallback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
     const stream_ctx: *StreamContext = @ptrCast(@alignCast(ctx));
@@ -52,7 +149,7 @@ fn streamCallback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
                                 std.debug.print("{s}Thinking...{s}\n", .{ color_gray, color_reset });
                                 stream_ctx.current_type = .thought;
                             }
-                            std.debug.print("{s}{s}{s}", .{ color_gray, thought.text, color_reset });
+                            printMarkdown(stream_ctx, thought.text);
                         },
                         .model_output => |mo| {
                             if (stream_ctx.current_type != .model_output) {
@@ -61,7 +158,7 @@ fn streamCallback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
                             }
                             switch (mo) {
                                 .text => |text| {
-                                    std.debug.print("{s}", .{text});
+                                    printMarkdown(stream_ctx, text);
                                 },
                             }
                         },
@@ -73,7 +170,10 @@ fn streamCallback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
                 .end => {},
             }
         },
-        .interaction_completed => {},
+        .interaction_completed => {
+            flushBackticks(stream_ctx);
+            flushAsterisks(stream_ctx);
+        },
     }
 }
 
