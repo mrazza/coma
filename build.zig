@@ -186,6 +186,12 @@ pub fn build(b: *std.Build) void {
     });
     const run_llm_tests = b.addRunArtifact(llm_tests);
 
+    // Creates an executable that will run `test` blocks from the testing module.
+    const testing_tests = b.addTest(.{
+        .root_module = testing,
+    });
+    const run_testing_tests = b.addRunArtifact(testing_tests);
+
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
@@ -194,6 +200,40 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_provider_tests.step);
     test_step.dependOn(&run_llm_tests.step);
+    test_step.dependOn(&run_testing_tests.step);
+
+    const coverage_step = b.step("coverage", "Generate coverage reports using kcov");
+    const test_suites = [_]*std.Build.Step.Compile{
+        mod_tests,
+        exe_tests,
+        provider_tests,
+        llm_tests,
+        testing_tests,
+    };
+    const merge_cover = b.addSystemCommand(&.{
+        "kcov",
+        "--merge",
+        "kcov-out/kcov-merged",
+        "kcov-out/suite_0",
+        "kcov-out/suite_1",
+        "kcov-out/suite_2",
+        "kcov-out/suite_3",
+        "kcov-out/suite_4",
+    });
+    for (test_suites, 0..) |test_exe, i| {
+        const out_dir = b.fmt("kcov-out/suite_{d}", .{i});
+        const run_cover = b.addSystemCommand(&.{
+            "kcov",
+            "--clean",
+            "--include-path=src",
+            out_dir,
+        });
+        run_cover.addArtifactArg(test_exe);
+        merge_cover.step.dependOn(&run_cover.step);
+    }
+    const clean_cover = b.addSystemCommand(&.{ "rm", "-r", "kcov-out/suite*" });
+    clean_cover.step.dependOn(&merge_cover.step);
+    coverage_step.dependOn(&clean_cover.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

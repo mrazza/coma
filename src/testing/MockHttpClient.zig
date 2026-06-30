@@ -258,3 +258,196 @@ pub fn request(self: *MockHttpClient, method: std.http.Method, uri: std.Uri, opt
         return error.NoMatchingExpectation;
     }
 }
+
+test "MockHttpClient - non-sequential success & mismatch" {
+    const allocator = std.testing.allocator;
+    const uri = try std.Uri.parse("https://example.com/path?a=b");
+    const uri_bad = try std.Uri.parse("https://wrong.com/path");
+
+    var call_counts = [_]usize{0};
+    var client = MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/path",
+                .expected_query = "a=b",
+                .expected_method = .GET,
+                .response_status = .ok,
+                .response_body = "response_ok",
+            },
+        },
+        .sequential = false,
+        .call_counts = &call_counts,
+    };
+
+    // Test request method (non-sequential success)
+    var req = try client.request(.GET, uri, .{});
+    defer req.deinit();
+    try req.sendBodyComplete("");
+    var resp = try req.receiveHead("");
+    const reader = resp.reader(&[_]u8{});
+    var buf: [100]u8 = undefined;
+    const n = try reader.readSliceShort(&buf);
+    try std.testing.expectEqualStrings("response_ok", buf[0..n]);
+    try std.testing.expectEqual(@as(usize, 1), call_counts[0]);
+
+    // Test non-sequential mismatch
+    _ = client.request(.GET, uri_bad, .{}) catch |err| {
+        try std.testing.expectEqual(error.NoMatchingExpectation, err);
+    };
+}
+
+test "MockHttpClient - sequential success, verification errors, and too many calls" {
+    const allocator = std.testing.allocator;
+    const uri = try std.Uri.parse("https://example.com/path?a=b");
+    const uri_no_query = try std.Uri.parse("https://example.com/path");
+
+    var call_counts = [_]usize{ 0, 0 };
+    var client = MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/path",
+                .expected_query = "a=b",
+                .expected_method = .POST,
+                .expected_payload = "payload_data",
+                .response_status = .ok,
+                .response_body = "seq1",
+            },
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/path",
+                .expected_query = null,
+                .expected_method = .GET,
+                .response_status = .ok,
+                .response_body = "seq2",
+            },
+        },
+        .sequential = true,
+        .call_counts = &call_counts,
+    };
+
+    // 1. Match first sequential (POST with payload)
+    var response_buf = std.Io.Writer.Allocating.init(allocator);
+    defer response_buf.deinit();
+    const res1 = try client.fetch(.{
+        .location = .{ .uri = uri },
+        .response_writer = &response_buf.writer,
+        .method = .POST,
+        .payload = "payload_data",
+    });
+    try std.testing.expectEqual(std.http.Status.ok, res1.status);
+    try std.testing.expectEqualStrings("seq1", response_buf.written());
+    try std.testing.expectEqual(@as(usize, 1), call_counts[0]);
+
+    // 2. Match second sequential (GET, no query, no payload)
+    var response_buf2 = std.Io.Writer.Allocating.init(allocator);
+    defer response_buf2.deinit();
+    const res2 = try client.fetch(.{
+        .location = .{ .uri = uri_no_query },
+        .response_writer = &response_buf2.writer,
+        .method = .GET,
+    });
+    try std.testing.expectEqual(std.http.Status.ok, res2.status);
+    try std.testing.expectEqualStrings("seq2", response_buf2.written());
+    try std.testing.expectEqual(@as(usize, 1), call_counts[1]);
+
+    // 3. Too many calls error
+    _ = client.fetch(.{
+        .location = .{ .uri = uri_no_query },
+        .response_writer = &response_buf2.writer,
+    }) catch |err| {
+        try std.testing.expectEqual(error.TooManyCalls, err);
+    };
+}
+
+test "MockHttpClient - verification errors unexpected query" {
+    const allocator = std.testing.allocator;
+    const uri_with_query = try std.Uri.parse("https://example.com/path?a=b");
+
+    var client = MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/path",
+                .expected_query = null,
+                .expected_method = .GET,
+                .response_status = .ok,
+                .response_body = "",
+            },
+        },
+        .sequential = true,
+    };
+    var w = std.Io.Writer.Allocating.init(allocator);
+    defer w.deinit();
+    try std.testing.expectError(error.UnexpectedQuery, client.fetch(.{
+        .location = .{ .uri = uri_with_query },
+        .response_writer = &w.writer,
+    }));
+}
+
+test "MockHttpClient - verification errors expected payload but got none" {
+    const allocator = std.testing.allocator;
+    const uri_no_query = try std.Uri.parse("https://example.com/path");
+
+    var client = MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/path",
+                .expected_query = null,
+                .expected_method = .POST,
+                .expected_payload = "some_payload",
+                .response_status = .ok,
+                .response_body = "",
+            },
+        },
+        .sequential = true,
+    };
+    var w = std.Io.Writer.Allocating.init(allocator);
+    defer w.deinit();
+    try std.testing.expectError(error.ExpectedPayloadButGotNone, client.fetch(.{
+        .location = .{ .uri = uri_no_query },
+        .response_writer = &w.writer,
+        .method = .POST,
+    }));
+}
+
+test "MockHttpClient - verification errors unexpected payload" {
+    const allocator = std.testing.allocator;
+    const uri_no_query = try std.Uri.parse("https://example.com/path");
+
+    var client = MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/path",
+                .expected_query = null,
+                .expected_method = .POST,
+                .expected_payload = null,
+                .response_status = .ok,
+                .response_body = "",
+            },
+        },
+        .sequential = true,
+    };
+    var w = std.Io.Writer.Allocating.init(allocator);
+    defer w.deinit();
+    try std.testing.expectError(error.UnexpectedPayload, client.fetch(.{
+        .location = .{ .uri = uri_no_query },
+        .response_writer = &w.writer,
+        .method = .POST,
+        .payload = "unexpected_payload_data",
+    }));
+}

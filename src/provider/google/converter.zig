@@ -366,3 +366,60 @@ test toModels {
     try std.testing.expectEqualStrings("gemini-model", generic_models[0].id);
     try std.testing.expectEqualStrings("Gemini Model", generic_models[0].display_name);
 }
+
+test "toDelta with empty arguments_delta" {
+    const arg_delta = api.InteractionStepDelta{
+        .arguments_delta = .{ .arguments = "foo" },
+    };
+    const delta = toDelta(arg_delta, &.{});
+    try std.testing.expect(delta == null);
+}
+
+test "toGoogleTool OOM" {
+    const tool = llm.types.Tool{
+        .name = "get_weather",
+        .description = "Get weather",
+        .parameters = &.{
+            .{
+                .name = "location",
+                .description = "City",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    try std.testing.expectError(error.OutOfMemory, toGoogleTool(std.testing.failing_allocator, tool));
+}
+
+test "toGoogleStep OOM" {
+    const prompt_step = llm.types.Step{ .prompt = "Hello" };
+    try std.testing.expectError(error.OutOfMemory, toGoogleStep(std.testing.failing_allocator, prompt_step));
+}
+
+test "toArguments OOM" {
+    const args = &[_]api.FunctionArgument{
+        .{ .name = "param", .value = "val" },
+    };
+    try std.testing.expectError(error.OutOfMemory, toArguments(std.testing.failing_allocator, args));
+}
+
+test "dupeArguments OOM" {
+    const args = &[_]api.FunctionArgument{
+        .{ .name = "param", .value = "val" },
+    };
+    try std.testing.expectError(error.OutOfMemory, dupeArguments(std.testing.failing_allocator, args));
+}
+
+test "toModels OOM" {
+    const models = &[_]api.GeminiModel{
+        .{
+            .name = "gemini-model",
+            .version = "1.0",
+            .displayName = "Gemini Model",
+            .description = "Test",
+            .inputTokenLimit = 100,
+            .outputTokenLimit = 50,
+        },
+    };
+    try std.testing.expectError(error.OutOfMemory, toModels(std.testing.failing_allocator, models));
+}

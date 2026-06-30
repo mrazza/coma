@@ -557,3 +557,96 @@ test "FunctionArgument parseFromJsonObject" {
     try std.testing.expectEqualStrings("date", function_arguments[1].name);
     try std.testing.expectEqualStrings("2026-06-28", function_arguments[1].value);
 }
+
+test "GoogleSearch jsonStringify" {
+    const allocator = std.testing.allocator;
+    const gs = GoogleSearch{};
+    var list: std.Io.Writer.Allocating = .init(allocator);
+    defer list.deinit();
+    var stringifier = std.json.Stringify{
+        .writer = &list.writer,
+        .options = .{},
+    };
+    try stringifier.write(gs);
+    try std.testing.expectEqualStrings("{\"type\":\"google_search\"}", list.written());
+}
+
+test "StandardProperty jsonStringify" {
+    const allocator = std.testing.allocator;
+    const enum_vals = &[_][]const u8{ "VAL1", "VAL2" };
+    const prop = Function.Parameters.StandardProperty{
+        .name = "my_enum",
+        .description = "Some enum",
+        .enum_values = enum_vals,
+    };
+    var list: std.Io.Writer.Allocating = .init(allocator);
+    defer list.deinit();
+    var jw = std.json.Stringify{ .writer = &list.writer, .options = .{} };
+    try jw.beginObject();
+    try prop.jsonStringify(&jw);
+    try jw.endObject();
+    try std.testing.expectEqualStrings("{\"description\":\"Some enum\",\"enum\":[\"VAL1\",\"VAL2\"]}", list.written());
+}
+
+test "ArrayProperty jsonStringify" {
+    const allocator = std.testing.allocator;
+    const prop = Function.Parameters.ArrayProperty{
+        .name = "my_arr",
+        .description = "Some array",
+        .item_type = "string",
+    };
+    var list: std.Io.Writer.Allocating = .init(allocator);
+    defer list.deinit();
+    var jw = std.json.Stringify{ .writer = &list.writer, .options = .{} };
+    try jw.beginObject();
+    try prop.jsonStringify(&jw);
+    try jw.endObject();
+    try std.testing.expectEqualStrings("{\"description\":\"Some array\",\"items\":{\"type\":\"string\"}}", list.written());
+}
+
+test "Property jsonStringify" {
+    const allocator = std.testing.allocator;
+    const prop_str = Function.Parameters.Property{
+        .string = .{
+            .name = "str_prop",
+            .description = "String property",
+            .enum_values = null,
+        },
+    };
+    var list: std.Io.Writer.Allocating = .init(allocator);
+    defer list.deinit();
+    var jw = std.json.Stringify{ .writer = &list.writer, .options = .{} };
+    try jw.beginObject();
+    try prop_str.jsonStringify(&jw);
+    try jw.endObject();
+    try std.testing.expectEqualStrings("{\"str_prop\":{\"type\":\"string\",\"description\":\"String property\"}}", list.written());
+}
+
+test "InteractionStreamEvent jsonParse step.start function_call with arguments and skip key" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"index\": 0, \"step\": {\"type\": \"function_call\", \"id\":\"un6k8t18\", \"name\": \"get_weather\", \"arguments\":{\"location\":\"Chicago\",\"name\":\"ignored_name\",\"id\":\"ignored_id\"}}, \"event_type\": \"step.start\" }";
+    const event = try std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer event.deinit();
+    const interaction_event = event.value;
+    try std.testing.expect(interaction_event == .step_start);
+    try std.testing.expectEqual(0, interaction_event.step_start.index);
+    try std.testing.expect(interaction_event.step_start.step == .function_call);
+    const function_call_step = interaction_event.step_start.step.function_call;
+    try std.testing.expectEqualStrings("un6k8t18", function_call_step.id);
+    try std.testing.expectEqualStrings("get_weather", function_call_step.name);
+    try std.testing.expectEqual(1, function_call_step.arguments.len);
+    try std.testing.expectEqualStrings("location", function_call_step.arguments[0].name);
+    try std.testing.expectEqualStrings("Chicago", function_call_step.arguments[0].value);
+}
+
+test "InteractionStreamEvent jsonParse missing event_type" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"index\": 0 }";
+    try std.testing.expectError(error.MissingField, std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true }));
+}
+
+test "InteractionStreamEvent jsonParse unexpected event_type" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"event_type\": \"invalid.event\" }";
+    try std.testing.expectError(error.UnexpectedToken, std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true }));
+}

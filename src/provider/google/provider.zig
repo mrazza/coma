@@ -1164,3 +1164,370 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
     try std.testing.expectEqualStrings("interaction_streaming_123", gemini_result.interaction_id);
     try std.testing.expectEqual(1, call_counts[0]);
 }
+
+test "StepAccumulator mismatch delta and init thought" {
+    const allocator = std.testing.allocator;
+
+    var thoughts = [_]api.Content{.{ .type = .text, .text = "thought_1" }};
+    const init_step = api.Step{ .thought = &thoughts };
+    var acc = try StepAccumulator.init(allocator, init_step);
+    defer acc.thought.deinit();
+    try std.testing.expect(acc == .thought);
+    try std.testing.expectEqualStrings("thought_1", acc.thought.written());
+
+    // Append mismatched delta (should fail)
+    const mismatch_delta = api.InteractionStepDelta{
+        .text_delta = .{ .type = .text, .text = "text" },
+    };
+    try std.testing.expectError(error.BadResponse, acc.appendStep(mismatch_delta));
+}
+
+test "StepAccumulator mismatch delta and init model_output" {
+    const allocator = std.testing.allocator;
+
+    var outputs = [_]api.Content{.{ .type = .text, .text = "output_1" }};
+    const init_step = api.Step{ .model_output = &outputs };
+    var acc = try StepAccumulator.init(allocator, init_step);
+    defer acc.model_output.deinit();
+    try std.testing.expect(acc == .model_output);
+    try std.testing.expectEqualStrings("output_1", acc.model_output.written());
+
+    // Append mismatched delta (should fail)
+    const mismatch_delta = api.InteractionStepDelta{
+        .arguments_delta = .{ .arguments = "args" },
+    };
+    try std.testing.expectError(error.BadResponse, acc.appendStep(mismatch_delta));
+}
+
+test "StepAccumulator mismatch delta and init tool_call" {
+    const allocator = std.testing.allocator;
+
+    const init_step = api.Step{
+        .function_call = .{
+            .id = "fc_id",
+            .name = "fc_name",
+            .arguments = &.{},
+        },
+    };
+    var acc = try StepAccumulator.init(allocator, init_step);
+    defer {
+        allocator.free(acc.tool_call.id);
+        allocator.free(acc.tool_call.name);
+        acc.tool_call.arguments_json.deinit();
+    }
+    try std.testing.expect(acc == .tool_call);
+    try std.testing.expectEqualStrings("fc_id", acc.tool_call.id);
+
+    // Append mismatched delta (should fail)
+    const mismatch_delta = api.InteractionStepDelta{
+        .thought_summary = .{ .content = .{ .type = .text, .text = "think" } },
+    };
+    try std.testing.expectError(error.BadResponse, acc.appendStep(mismatch_delta));
+
+    // Test handleToolCallDelta when json is not valid (returns null)
+    try std.testing.expect(try acc.handleToolCallDelta(allocator) == null);
+
+    // Test append valid delta and handleToolCallDelta returning null when new_count == 0
+    const args_delta = api.InteractionStepDelta{
+        .arguments_delta = .{ .arguments = "{\"arg1\": \"val1\"}" },
+    };
+    try acc.appendStep(args_delta);
+    const args = try acc.handleToolCallDelta(allocator);
+    try std.testing.expect(args != null);
+    defer {
+        for (args.?) |arg| {
+            allocator.free(arg.name);
+            allocator.free(arg.value);
+        }
+        allocator.free(args.?);
+    }
+
+    // Calling handleToolCallDelta again without new changes should return null
+    try std.testing.expect(try acc.handleToolCallDelta(allocator) == null);
+}
+
+test "StepAccumulator mismatch delta and init empty" {
+    var acc: StepAccumulator = .empty;
+    const delta = api.InteractionStepDelta{
+        .text_delta = .{ .type = .text, .text = "text" },
+    };
+    try std.testing.expectError(error.BadResponse, acc.appendStep(delta));
+}
+
+test "Gemini.executeStep returns function call" {
+    const allocator = std.testing.allocator;
+
+    const response_json =
+        \\{
+        \\  "id": "interaction_fc",
+        \\  "steps": [
+        \\    {
+        \\      "type": "function_call",
+        \\      "id": "call_abc",
+        \\      "name": "get_weather",
+        \\      "arguments": {
+        \\        "location": "Miami"
+        \\      }
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    const mock_client = testing.MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":false}",
+                .response_status = .ok,
+                .response_body = response_json,
+            },
+        },
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
+        .tools = &.{},
+    };
+
+    var result = try p.executeStep(allocator, config, &.{}, null);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("interaction_fc", (@as(*gemini_types.StepResult, @ptrCast(@alignCast(result.ptr)))).interaction_id);
+    try std.testing.expectEqual(1, result.tool_calls.len);
+    try std.testing.expectEqualStrings("call_abc", result.tool_calls[0].id);
+    try std.testing.expectEqualStrings("get_weather", result.tool_calls[0].name);
+    try std.testing.expectEqual(1, result.tool_calls[0].arguments.len);
+    try std.testing.expectEqualStrings("location", result.tool_calls[0].arguments[0].name);
+    try std.testing.expectEqualStrings("Miami", result.tool_calls[0].arguments[0].value);
+}
+
+test "Gemini.executeStepStreaming multiple interaction_created" {
+    const allocator = std.testing.allocator;
+
+    const CallbackState = struct {
+        fn callback(ctx_ptr: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            _ = ctx_ptr;
+            _ = chunk;
+        }
+    };
+
+    const payload =
+        \\data: {"event_type": "interaction.created", "interaction": {"id": "int_1"}}
+        \\data: {"event_type": "interaction.created", "interaction": {"id": "int_2"}}
+        \\
+    ;
+    const mock_client = testing.MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .response_status = .ok,
+                .response_body = payload,
+            },
+        },
+    };
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
+        .tools = &.{},
+    };
+    try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null));
+}
+
+test "Gemini.executeStepStreaming duplicate step start" {
+    const allocator = std.testing.allocator;
+
+    const CallbackState = struct {
+        fn callback(ctx_ptr: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            _ = ctx_ptr;
+            _ = chunk;
+        }
+    };
+
+    const payload =
+        \\data: {"event_type": "step.start", "index": 0, "step": {"type": "thought"}}
+        \\data: {"event_type": "step.start", "index": 0, "step": {"type": "thought"}}
+        \\
+    ;
+    const mock_client = testing.MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .response_status = .ok,
+                .response_body = payload,
+            },
+        },
+    };
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
+        .tools = &.{},
+    };
+    try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null));
+}
+
+test "Gemini.executeStepStreaming delta for non-existent step index" {
+    const allocator = std.testing.allocator;
+
+    const CallbackState = struct {
+        fn callback(ctx_ptr: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            _ = ctx_ptr;
+            _ = chunk;
+        }
+    };
+
+    const payload =
+        \\data: {"event_type": "step.delta", "index": 5, "delta": {"type": "text", "text": "foo"}}
+        \\
+    ;
+    const mock_client = testing.MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .response_status = .ok,
+                .response_body = payload,
+            },
+        },
+    };
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
+        .tools = &.{},
+    };
+    try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null));
+}
+
+test "Gemini.executeStepStreaming mismatched interaction completed ID" {
+    const allocator = std.testing.allocator;
+
+    const CallbackState = struct {
+        fn callback(ctx_ptr: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            _ = ctx_ptr;
+            _ = chunk;
+        }
+    };
+
+    const payload =
+        \\data: {"event_type": "interaction.created", "interaction": {"id": "int_1"}}
+        \\data: {"event_type": "interaction.completed", "interaction": {"id": "int_mismatch"}}
+        \\
+    ;
+    const mock_client = testing.MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .response_status = .ok,
+                .response_body = payload,
+            },
+        },
+    };
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
+        .tools = &.{},
+    };
+    try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null));
+}
+
+test "Gemini.executeStepStreaming fallback interaction ID to unknown" {
+    const allocator = std.testing.allocator;
+
+    const CallbackState = struct {
+        fn callback(ctx_ptr: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            _ = ctx_ptr;
+            _ = chunk;
+        }
+    };
+
+    const payload =
+        \\data: {"event_type": "step.start", "index": 0, "step": {"type": "thought"}}
+        \\
+    ;
+    const mock_client = testing.MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .response_status = .ok,
+                .response_body = payload,
+            },
+        },
+    };
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
+        .tools = &.{},
+    };
+    var result = try p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("unknown", (@as(*gemini_types.StreamingStepResult, @ptrCast(@alignCast(result.ptr)))).interaction_id);
+}
+
+test "ListModelsResult.init OOM" {
+    const response_json = "{\"models\":[]}";
+    var parsed = try std.json.parseFromSlice(api.ListModelsResponse, std.testing.allocator, response_json, .{});
+    defer parsed.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, gemini_types.ListModelsResult.init(std.testing.failing_allocator, parsed));
+}
+
+test "StepResult.init OOM" {
+    const response_json = "{\"id\":\"int_id\",\"steps\":[]}";
+    var parsed = try std.json.parseFromSlice(api.Interaction, std.testing.allocator, response_json, .{});
+    defer parsed.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, gemini_types.StepResult.init(std.testing.failing_allocator, parsed));
+}
+
+test "StreamingStepResult.init OOM" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.OutOfMemory, gemini_types.StreamingStepResult.init(std.testing.failing_allocator, arena, "id", &.{}, &.{}, &.{}));
+}
