@@ -1,6 +1,7 @@
 const std = @import("std");
 const llm = @import("llm");
 const api = @import("api.zig");
+const converter = @import("converter.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -17,12 +18,8 @@ pub const ListModelsResult = struct {
     pub fn init(allocator: Allocator, parsed_response: std.json.Parsed(api.ListModelsResponse)) !llm.types.ListModelsResult {
         const self = try allocator.create(ListModelsResult);
         errdefer allocator.destroy(self);
-        var models = try allocator.alloc(llm.types.Model, parsed_response.value.models.len);
+        const models = try converter.toModels(allocator, parsed_response.value.models);
         errdefer allocator.free(models);
-        for (parsed_response.value.models, 0..) |gemini_model, i| {
-            models[i].id = gemini_model.name;
-            models[i].display_name = gemini_model.displayName;
-        }
         self.* = .{
             .allocator = allocator,
             .parsed_response = parsed_response,
@@ -67,7 +64,12 @@ pub const StepResult = struct {
         var thoughts_list: std.ArrayList(llm.types.Thought) = .empty;
         errdefer thoughts_list.deinit(allocator);
         var tool_calls_list: std.ArrayList(llm.types.ToolCall) = .empty;
-        errdefer tool_calls_list.deinit(allocator);
+        errdefer {
+            for (tool_calls_list.items) |call| {
+                allocator.free(call.arguments);
+            }
+            tool_calls_list.deinit(allocator);
+        }
 
         for (parsed_response.value.steps) |step| {
             switch (step) {
@@ -90,18 +92,12 @@ pub const StepResult = struct {
                     }
                 },
                 .function_call => |call| {
-                    var argument_list: std.ArrayList(llm.types.Argument) = .empty;
-                    errdefer argument_list.deinit(allocator);
-                    for (call.arguments) |argument| {
-                        try argument_list.append(allocator, .{
-                            .name = argument.name,
-                            .value = argument.value,
-                        });
-                    }
+                    const arguments = try converter.toArguments(allocator, call.arguments);
+                    errdefer allocator.free(arguments);
                     try tool_calls_list.append(allocator, .{
                         .id = call.id,
                         .name = call.name,
-                        .arguments = try argument_list.toOwnedSlice(allocator),
+                        .arguments = arguments,
                     });
                 },
             }
@@ -191,4 +187,3 @@ pub const StreamingStepResult = struct {
         allocator.destroy(self);
     }
 };
-
