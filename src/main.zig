@@ -4,6 +4,79 @@ const llm = @import("llm");
 
 const coma = @import("coma");
 
+const color_reset = "\x1b[0m";
+const color_bold = "\x1b[1m";
+const color_gray = "\x1b[90m";
+const color_blue = "\x1b[34m";
+const color_cyan = "\x1b[36m";
+const color_green = "\x1b[32m";
+const color_yellow = "\x1b[33m";
+
+const StreamContext = struct {
+    allocator: std.mem.Allocator,
+    current_type: ?llm.types.StepType = null,
+};
+
+fn streamCallback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+    const stream_ctx: *StreamContext = @ptrCast(@alignCast(ctx));
+    switch (chunk.event) {
+        .interaction_created => {},
+        .step_event => |step_ev| {
+            switch (step_ev.event) {
+                .start => |start_payload| {
+                    switch (start_payload) {
+                        .thought => {
+                            if (stream_ctx.current_type != .thought) {
+                                std.debug.print("{s}Thinking...{s}\n", .{ color_gray, color_reset });
+                                stream_ctx.current_type = .thought;
+                            }
+                        },
+                        .model_output => {
+                            if (stream_ctx.current_type != .model_output) {
+                                std.debug.print("\n{s}Agent >{s} ", .{ color_cyan ++ color_bold, color_reset });
+                                stream_ctx.current_type = .model_output;
+                            }
+                        },
+                        .tool_call => |tc| {
+                            if (stream_ctx.current_type != .tool_call) {
+                                std.debug.print("\n{s}[Tool Call: {s}]{s}\n", .{ color_yellow, tc.name, color_reset });
+                                stream_ctx.current_type = .tool_call;
+                            }
+                        },
+                    }
+                },
+                .delta => |delta| {
+                    switch (delta) {
+                        .thought => |thought| {
+                            if (stream_ctx.current_type != .thought) {
+                                std.debug.print("{s}Thinking...{s}\n", .{ color_gray, color_reset });
+                                stream_ctx.current_type = .thought;
+                            }
+                            std.debug.print("{s}{s}{s}", .{ color_gray, thought.text, color_reset });
+                        },
+                        .model_output => |mo| {
+                            if (stream_ctx.current_type != .model_output) {
+                                std.debug.print("\n{s}Agent >{s} ", .{ color_cyan ++ color_bold, color_reset });
+                                stream_ctx.current_type = .model_output;
+                            }
+                            switch (mo) {
+                                .text => |text| {
+                                    std.debug.print("{s}", .{text});
+                                },
+                            }
+                        },
+                        .tool_call => |args| {
+                            _ = args;
+                        },
+                    }
+                },
+                .end => {},
+            }
+        },
+        .interaction_completed => {},
+    }
+}
+
 /// Loads the GEMINI_API_KEY from the environment variables.
 /// If not found, it attempts to read it from a `.env` file in the current working directory.
 /// Returns an allocated string containing the API key, or `error.ApiKeyMissing` if not found.
@@ -67,7 +140,6 @@ pub fn main(init: std.process.Init) !void {
     var selected_model: ?llm.types.Model = null;
 
     selected_model = for (models) |model| {
-        std.debug.print("Model: {s}\n", .{model.display_name});
         if (std.mem.containsAtLeast(u8, model.display_name, 1, "3 Flash")) {
             break model;
         }
@@ -91,7 +163,16 @@ pub fn main(init: std.process.Init) !void {
         },
     };
 
-    std.debug.print("Selected: {s}\n", .{selected_model.?.id});
+    std.debug.print(
+        \\{s}============================================================================
+        \\                    COMA Agent Chat Interface
+        \\============================================================================
+        \\Model: {s} ({s})
+        \\Type a prompt and press Enter.
+        \\Press Ctrl+D or leave empty and press Enter to exit.
+        \\============================================================================{s}
+        \\
+    , .{ color_cyan, selected_model.?.display_name, selected_model.?.id, color_reset });
 
     var stdin_buffer: [1024]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
@@ -106,6 +187,7 @@ pub fn main(init: std.process.Init) !void {
         defer new_steps.deinit(allocator);
 
         if (last_step == null or last_step.?.tool_calls.len == 0) {
+            std.debug.print("\n{s}User > {s}", .{ color_green ++ color_bold, color_reset });
             const user_input = try stdin_reader.interface.takeDelimiter('\n') orelse break;
             if (user_input.len == 0) break;
             try new_steps.append(allocator, .{ .prompt = user_input });
@@ -113,7 +195,8 @@ pub fn main(init: std.process.Init) !void {
             for (last_step.?.tool_calls) |tool_call| {
                 if (std.mem.eql(u8, tool_call.name, "execute_typescript")) {
                     const code = tool_call.arguments[0].value;
-                    std.debug.print("Executing: {s}\n", .{code});
+                    std.debug.print("\n{s}Executing TypeScript code...{s}\n", .{ color_yellow, color_reset });
+                    std.debug.print("{s}--- CODE ---{s}\n{s}\n{s}------------{s}\n", .{ color_gray, color_reset, code, color_gray, color_reset });
                     const argv = [_][]const u8{
                         "npx", "tsx", "-e", code,
                     };
@@ -127,6 +210,7 @@ pub fn main(init: std.process.Init) !void {
                             .id = tool_call.id,
                             .result = result.stdout,
                         };
+                        std.debug.print("{s}Output:{s}\n{s}", .{ color_green, color_reset, result.stdout });
                         try last_tool_results.append(allocator, tool_result);
                         try new_steps.append(allocator, .{ .tool_result = tool_result });
                         allocator.free(result.stderr);
@@ -135,19 +219,8 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        const step_result = try client.executeStepStreaming(allocator, session_config, new_steps.items, last_step, struct {
-            pub fn lambda(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
-                const alloc: *std.mem.Allocator = @ptrCast(@alignCast(ctx));
-                var payload_buffer: std.Io.Writer.Allocating = .init(alloc.*);
-                defer payload_buffer.deinit();
-                var stringifier = std.json.Stringify{
-                    .writer = &payload_buffer.writer,
-                    .options = .{},
-                };
-                stringifier.write(chunk.event) catch return;
-                std.debug.print("Chunk: {s}\n", .{payload_buffer.written()});
-            }
-        }.lambda, &allocator);
+        var stream_ctx = StreamContext{ .allocator = allocator };
+        const step_result = try client.executeStepStreaming(allocator, session_config, new_steps.items, last_step, streamCallback, &stream_ctx);
         errdefer step_result.deinit();
 
         for (last_tool_results.items) |tool_call| {
@@ -155,14 +228,8 @@ pub fn main(init: std.process.Init) !void {
         }
         last_tool_results.clearRetainingCapacity();
 
-        for (step_result.thoughts) |thought| {
-            std.debug.print("Thinking: {s}\n", .{thought.text});
-        }
-
-        for (step_result.model_output) |content| {
-            switch (content) {
-                .text => |text| std.debug.print("Response: {s}\n", .{text}),
-            }
+        if (stream_ctx.current_type != null) {
+            std.debug.print("\n", .{});
         }
 
         if (last_step) |*last| {
