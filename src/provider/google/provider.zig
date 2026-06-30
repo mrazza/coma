@@ -256,16 +256,7 @@ fn MakeProvider(comptime ClientType: type) type {
 
                         step_accumulators.items[e.index] = StepAccumulator.init(result_arena.allocator(), e.step) catch |err| return Helper.mapError(err);
 
-                        const payload: llm.types.StepStartPayload = switch (e.step) {
-                            .thought => .thought,
-                            .model_output => .model_output,
-                            .function_call => |fc| .{
-                                .tool_call = .{
-                                    .id = fc.id,
-                                    .name = fc.name,
-                                },
-                            },
-                        };
+                        const payload = converter.toStepStartPayload(e.step);
                         callback(callback_context, .{
                             .event = .{
                                 .step_event = .{
@@ -289,31 +280,12 @@ fn MakeProvider(comptime ClientType: type) type {
                             allocator.free(arguments);
                         }
 
-                        var delta_payload: ?llm.types.Delta = null;
-                        switch (e.delta) {
-                            .arguments_delta => {
-                                if (try acc.handleToolCallDelta(allocator)) |args| {
-                                    arguments = args;
-                                    delta_payload = .{
-                                        .tool_call = arguments,
-                                    };
-                                }
-                            },
-                            .text_delta => |td| {
-                                delta_payload = .{
-                                    .model_output = .{
-                                        .text = td.text orelse "",
-                                    },
-                                };
-                            },
-                            .thought_summary => |ts| {
-                                delta_payload = .{
-                                    .thought = .{
-                                        .text = ts.content.text orelse "",
-                                    },
-                                };
-                            },
+                        if (e.delta == .arguments_delta) {
+                            if (try acc.handleToolCallDelta(allocator)) |args| {
+                                arguments = args;
+                            }
                         }
+                        const delta_payload = converter.toDelta(e.delta, arguments);
 
                         if (delta_payload) |payload| {
                             callback(callback_context, .{
@@ -362,10 +334,7 @@ fn MakeProvider(comptime ClientType: type) type {
                     .tool_call => |*tc| {
                         const json_parsed_args = std.json.parseFromSlice(std.json.Value, result_arena.allocator(), tc.arguments_json.written(), .{}) catch return ProviderError.BadResponse;
                         const function_arguments = api.FunctionArgument.parseFromJsonObject(result_arena.allocator(), json_parsed_args.value) catch return ProviderError.BadResponse;
-                        const parsed_args: []llm.types.Argument = try result_arena.allocator().alloc(llm.types.Argument, function_arguments.len);
-                        for (function_arguments, 0..) |curr_arg, index| {
-                            parsed_args[index] = .{ .name = curr_arg.name, .value = curr_arg.value };
-                        }
+                        const parsed_args = converter.toArguments(result_arena.allocator(), function_arguments) catch return ProviderError.BadResponse;
                         try final_tool_calls.append(result_arena.allocator(), .{
                             .id = tc.id,
                             .name = tc.name,
@@ -513,21 +482,13 @@ const StepAccumulator = union(enum) {
             return null;
         }
 
-        const arguments = try allocator.alloc(llm.types.Argument, new_count);
+        const arguments = try converter.dupeArguments(allocator, function_arguments[acc.tool_call.processed_argument_count..]);
         errdefer {
             for (arguments) |arg| {
                 allocator.free(arg.name);
                 allocator.free(arg.value);
             }
             allocator.free(arguments);
-        }
-
-        for (acc.tool_call.processed_argument_count..function_arguments.len, 0..) |i, j| {
-            const f_arg = function_arguments[i];
-            arguments[j] = .{
-                .name = try allocator.dupe(u8, f_arg.name),
-                .value = try allocator.dupe(u8, f_arg.value),
-            };
         }
 
         acc.tool_call.processed_argument_count = function_arguments.len;

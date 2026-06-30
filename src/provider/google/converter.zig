@@ -85,6 +85,99 @@ pub fn toGoogleStep(arena: Allocator, step: llm.types.Step) !api.CreateInteracti
     }
 }
 
+/// Converts a Gemini API step type into a generic step start payload.
+pub fn toStepStartPayload(step: api.Step) llm.types.StepStartPayload {
+    return switch (step) {
+        .thought => .thought,
+        .model_output => .model_output,
+        .function_call => |fc| .{
+            .tool_call = .{
+                .id = fc.id,
+                .name = fc.name,
+            },
+        },
+    };
+}
+
+/// Converts a Gemini API step delta into a generic delta.
+/// For tool calls, the parsed arguments must be provided.
+///
+/// Returns null if no interesting or reasonable `Delta` object can be constructed. For example,
+/// if a tool call delta is received but no arguments have been provided yet.
+pub fn toDelta(delta: api.InteractionStepDelta, arguments: []const llm.types.Argument) ?llm.types.Delta {
+    return switch (delta) {
+        .arguments_delta => if (arguments.len > 0) .{
+            .tool_call = arguments,
+        } else null,
+        .text_delta => |td| .{
+            .model_output = .{
+                .text = td.text orelse "",
+            },
+        },
+        .thought_summary => |ts| .{
+            .thought = .{
+                .text = ts.content.text orelse "",
+            },
+        },
+    };
+}
+
+/// Converts a Gemini API function argument to a generic argument without duplicating strings.
+pub fn toArgument(arg: api.FunctionArgument) llm.types.Argument {
+    return .{
+        .name = arg.name,
+        .value = arg.value,
+    };
+}
+
+/// Converts a slice of Gemini API function arguments to a generic argument slice.
+/// Caller owns the returned slice, but not the individual strings.
+pub fn toArguments(allocator: Allocator, args: []const api.FunctionArgument) ![]llm.types.Argument {
+    const result = try allocator.alloc(llm.types.Argument, args.len);
+    for (args, 0..) |arg, i| {
+        result[i] = toArgument(arg);
+    }
+    return result;
+}
+
+/// Converts a slice of Gemini API function arguments to a generic argument slice, duplicating all strings.
+/// Caller owns the returned slice and the individual strings.
+pub fn dupeArguments(allocator: Allocator, args: []const api.FunctionArgument) ![]llm.types.Argument {
+    const result = try allocator.alloc(llm.types.Argument, args.len);
+    errdefer {
+        for (result) |arg| {
+            allocator.free(arg.name);
+            allocator.free(arg.value);
+        }
+        allocator.free(result);
+    }
+    for (args, 0..) |arg, i| {
+        result[i] = .{
+            .name = try allocator.dupe(u8, arg.name),
+            .value = try allocator.dupe(u8, arg.value),
+        };
+    }
+    return result;
+}
+
+/// Converts a Gemini API model to a generic model structure.
+pub fn toModel(model: api.GeminiModel) llm.types.Model {
+    return .{
+        .id = model.name,
+        .display_name = model.displayName,
+    };
+}
+
+/// Converts a slice of Gemini API models to a generic model slice.
+/// Caller owns the returned slice.
+pub fn toModels(allocator: Allocator, models: []const api.GeminiModel) ![]llm.types.Model {
+    const result = try allocator.alloc(llm.types.Model, models.len);
+    for (models, 0..) |model, i| {
+        result[i] = toModel(model);
+    }
+    return result;
+}
+
 test toGoogleTool {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -171,4 +264,105 @@ test toGoogleStep {
     try std.testing.expectEqualStrings("test_tool", google_tool.function_result.name);
     try std.testing.expectEqualStrings("call_123", google_tool.function_result.call_id);
     try std.testing.expectEqualStrings("success", google_tool.function_result.result);
+}
+
+test toStepStartPayload {
+    const thought_step = api.Step{ .thought = &.{} };
+    const thought_payload = toStepStartPayload(thought_step);
+    try std.testing.expect(thought_payload == .thought);
+
+    const model_output_step = api.Step{ .model_output = &.{} };
+    const model_payload = toStepStartPayload(model_output_step);
+    try std.testing.expect(model_payload == .model_output);
+
+    const function_call_step = api.Step{
+        .function_call = .{
+            .id = "call_id",
+            .name = "func_name",
+            .arguments = &.{},
+        },
+    };
+    const fc_payload = toStepStartPayload(function_call_step);
+    try std.testing.expectEqualStrings("call_id", fc_payload.tool_call.id);
+    try std.testing.expectEqualStrings("func_name", fc_payload.tool_call.name);
+}
+
+test toDelta {
+    const arguments = &[_]llm.types.Argument{
+        .{ .name = "arg1", .value = "val1" },
+    };
+    const arg_delta = api.InteractionStepDelta{
+        .arguments_delta = .{ .arguments = "foo" },
+    };
+    const delta1 = toDelta(arg_delta, arguments);
+    try std.testing.expect(delta1.? == .tool_call);
+    try std.testing.expectEqualStrings("arg1", delta1.?.tool_call[0].name);
+
+    const text_delta = api.InteractionStepDelta{
+        .text_delta = .{ .type = .text, .text = "hello" },
+    };
+    const delta2 = toDelta(text_delta, &.{});
+    try std.testing.expect(delta2.? == .model_output);
+    try std.testing.expectEqualStrings("hello", delta2.?.model_output.text);
+
+    const thought_delta = api.InteractionStepDelta{
+        .thought_summary = .{
+            .content = .{ .type = .text, .text = "thinking" },
+        },
+    };
+    const delta3 = toDelta(thought_delta, &.{});
+    try std.testing.expect(delta3.? == .thought);
+    try std.testing.expectEqualStrings("thinking", delta3.?.thought.text);
+}
+
+test toArguments {
+    const allocator = std.testing.allocator;
+    const args = &[_]api.FunctionArgument{
+        .{ .name = "param", .value = "value" },
+    };
+
+    const generic_args = try toArguments(allocator, args);
+    defer allocator.free(generic_args);
+    try std.testing.expectEqual(1, generic_args.len);
+    try std.testing.expectEqualStrings("param", generic_args[0].name);
+    try std.testing.expectEqualStrings("value", generic_args[0].value);
+}
+
+test dupeArguments {
+    const allocator = std.testing.allocator;
+    const args = &[_]api.FunctionArgument{
+        .{ .name = "param", .value = "value" },
+    };
+
+    const generic_duped = try dupeArguments(allocator, args);
+    defer {
+        for (generic_duped) |arg| {
+            allocator.free(arg.name);
+            allocator.free(arg.value);
+        }
+        allocator.free(generic_duped);
+    }
+    try std.testing.expectEqual(1, generic_duped.len);
+    try std.testing.expectEqualStrings("param", generic_duped[0].name);
+    try std.testing.expectEqualStrings("value", generic_duped[0].value);
+}
+
+test toModels {
+    const allocator = std.testing.allocator;
+    const models = &[_]api.GeminiModel{
+        .{
+            .name = "gemini-model",
+            .version = "1.0",
+            .displayName = "Gemini Model",
+            .description = "Test",
+            .inputTokenLimit = 100,
+            .outputTokenLimit = 50,
+        },
+    };
+
+    const generic_models = try toModels(allocator, models);
+    defer allocator.free(generic_models);
+    try std.testing.expectEqual(1, generic_models.len);
+    try std.testing.expectEqualStrings("gemini-model", generic_models[0].id);
+    try std.testing.expectEqualStrings("Gemini Model", generic_models[0].display_name);
 }
