@@ -1,6 +1,7 @@
 # This file is for zig-specific build artifacts.
 .zig-cache/
 zig-out/
+kcov-out/
 /release/
 /debug/
 /build/

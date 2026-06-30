@@ -210,6 +210,8 @@ pub fn build(b: *std.Build) void {
         llm_tests,
         testing_tests,
     };
+    const make_dir = b.addSystemCommand(&.{ "mkdir", "-p", "kcov-out" });
+
     const merge_cover = b.addSystemCommand(&.{
         "kcov",
         "--merge",
@@ -228,10 +230,17 @@ pub fn build(b: *std.Build) void {
             "--include-path=src",
             out_dir,
         });
+        run_cover.step.dependOn(&make_dir.step);
         run_cover.addArtifactArg(test_exe);
         merge_cover.step.dependOn(&run_cover.step);
     }
-    const clean_cover = b.addSystemCommand(&.{ "rm", "-r", "kcov-out/suite*" });
+    var clean_args = b.allocator.alloc([]const u8, 2 + test_suites.len) catch @panic("OOM");
+    clean_args[0] = "rm";
+    clean_args[1] = "-rf";
+    for (test_suites, 0..) |_, i| {
+        clean_args[2 + i] = b.fmt("kcov-out/suite_{d}", .{i});
+    }
+    const clean_cover = b.addSystemCommand(clean_args);
     clean_cover.step.dependOn(&merge_cover.step);
     coverage_step.dependOn(&clean_cover.step);
 
