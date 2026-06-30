@@ -143,36 +143,6 @@ pub const StepResult = struct {
     }
 };
 
-pub const StreamingChunk = struct {
-    allocator: std.mem.Allocator,
-    parsed_response: std.json.Parsed(api.InteractionStreamEvent),
-
-    /// Initializes a new StreamingChunk and returns a reference via the `llm.types.StreamingChunk` interface.
-    pub fn init(allocator: std.mem.Allocator, parsed_response: std.json.Parsed(api.InteractionStreamEvent), event: llm.types.StreamingChunk.Event) !llm.types.StreamingChunk {
-        const self = try allocator.create(StreamingChunk);
-        errdefer allocator.destroy(self);
-        self.* = .{
-            .allocator = allocator,
-            .parsed_response = parsed_response,
-        };
-
-        return .{
-            .ptr = self,
-            .event = event,
-            .vtable = &.{ .deinit = deinit },
-        };
-    }
-
-    /// Frees resources associated with the chunk.
-    pub fn deinit(ctx: *anyopaque) void {
-        const self: *StreamingChunk = @ptrCast(@alignCast(ctx));
-        const allocator = self.allocator;
-        self.parsed_response.deinit();
-        self.* = undefined;
-        allocator.destroy(self);
-    }
-};
-
 /// A Gemini-specific implementation of the `llm.types.StepResult` interface for streaming requests.
 pub const StreamingStepResult = struct {
     interaction_id: []const u8,

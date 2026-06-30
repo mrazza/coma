@@ -168,8 +168,8 @@ fn MakeProvider(comptime ClientType: type) type {
         /// `callback_context` is user-provided context passed back to the callback function.
         ///
         /// **Memory Alert**:
-        /// - The chunks sent to `callback` are managed and cleaned up by `executeStepStreaming` after the callback returns.
-        ///   The callback must copy any data it needs to retain past the execution of the callback.
+        /// - The chunks sent to `callback` are managed by the Provider and will be freed after the callback returns.
+        ///   The callback must copy/duplicate any data it needs to retain past the execution of the callback.
         /// - The caller **MUST** call `deinit()` on the returned final `StepResult` to free the accumulated response contents.
         ///
         /// Returns the accumulated `StepResult` once the stream completes, or a `ProviderError` on failure.
@@ -217,12 +217,13 @@ fn MakeProvider(comptime ClientType: type) type {
                 };
                 _ = reader.toss(1);
 
-                if (!std.mem.startsWith(u8, line_writer.written(), "data: ") or
-                    std.mem.endsWith(u8, line_writer.written(), "[DONE]")) continue;
+                const line = std.mem.trimEnd(u8, line_writer.written(), "\r");
+                if (!std.mem.startsWith(u8, line, "data: ") or
+                    std.mem.endsWith(u8, line, "[DONE]")) continue;
 
-                const json_data = line_writer.written()[6..];
+                const json_data = line[6..];
 
-                const stream_event = std.json.parseFromSlice(
+                var stream_event = std.json.parseFromSlice(
                     api.InteractionStreamEvent,
                     allocator,
                     json_data,
@@ -233,20 +234,17 @@ fn MakeProvider(comptime ClientType: type) type {
                 ) catch |err| {
                     if (err == error.InvalidEnumTag) continue else return ProviderError.BadResponse;
                 };
-                errdefer stream_event.deinit();
+                defer stream_event.deinit();
 
                 const event_type = stream_event.value;
                 switch (event_type) {
                     .interaction_created => |e| {
                         if (interaction_id != null) return ProviderError.BadResponse;
                         interaction_id = try result_arena.allocator().dupe(u8, e.interaction.id);
-                        var chunk = try gemini_types.StreamingChunk.init(allocator, stream_event, .{ .interaction_created = {} });
-                        defer chunk.deinit();
-                        callback(callback_context, chunk);
+                        callback(callback_context, .{ .event = .{ .interaction_created = {} } });
                     },
                     .interaction_status_update => {
                         // Ignored.
-                        stream_event.deinit();
                     },
                     .step_start => |e| {
                         if (step_accumulators.items.len <= e.index) {
@@ -268,14 +266,14 @@ fn MakeProvider(comptime ClientType: type) type {
                                 },
                             },
                         };
-                        var chunk = try gemini_types.StreamingChunk.init(allocator, stream_event, .{
-                            .step_event = .{
-                                .index = e.index,
-                                .event = .{ .start = payload },
+                        callback(callback_context, .{
+                            .event = .{
+                                .step_event = .{
+                                    .index = e.index,
+                                    .event = .{ .start = payload },
+                                },
                             },
                         });
-                        defer chunk.deinit();
-                        callback(callback_context, chunk);
                     },
                     .step_delta => |e| {
                         if (e.index >= step_accumulators.items.len) return ProviderError.BadResponse;
@@ -318,33 +316,29 @@ fn MakeProvider(comptime ClientType: type) type {
                         }
 
                         if (delta_payload) |payload| {
-                            var chunk = try gemini_types.StreamingChunk.init(allocator, stream_event, .{
-                                .step_event = .{
-                                    .index = e.index,
-                                    .event = .{ .delta = payload },
+                            callback(callback_context, .{
+                                .event = .{
+                                    .step_event = .{
+                                        .index = e.index,
+                                        .event = .{ .delta = payload },
+                                    },
                                 },
                             });
-                            defer chunk.deinit();
-                            callback(callback_context, chunk);
-                        } else {
-                            stream_event.deinit();
                         }
                     },
                     .step_stop => |e| {
-                        var chunk = try gemini_types.StreamingChunk.init(allocator, stream_event, .{
-                            .step_event = .{
-                                .index = e.index,
-                                .event = .end,
+                        callback(callback_context, .{
+                            .event = .{
+                                .step_event = .{
+                                    .index = e.index,
+                                    .event = .end,
+                                },
                             },
                         });
-                        defer chunk.deinit();
-                        callback(callback_context, chunk);
                     },
                     .interaction_completed => |e| {
                         if (interaction_id == null or !std.mem.eql(u8, interaction_id.?, e.interaction.id)) return ProviderError.BadResponse;
-                        var chunk = try gemini_types.StreamingChunk.init(allocator, stream_event, .{ .interaction_completed = {} });
-                        defer chunk.deinit();
-                        callback(callback_context, chunk);
+                        callback(callback_context, .{ .event = .{ .interaction_completed = {} } });
                     },
                 }
             }
@@ -1033,6 +1027,165 @@ test "Gemini.executeStepStreaming success" {
     try std.testing.expectEqualStrings("Hello from streaming!", ctx.model_output_text.written());
     try std.testing.expectEqualStrings("Thinking hard", ctx.thought_text.written());
     //try std.testing.expect(ctx.tool_call_arguments_received);
+
+    // Verify accumulated StepResult
+    try std.testing.expectEqual(1, result.model_output.len);
+    try std.testing.expectEqualStrings("Hello from streaming!", result.model_output[0].text);
+    try std.testing.expectEqual(1, result.thoughts.len);
+    try std.testing.expectEqualStrings("Thinking hard", result.thoughts[0].text);
+    try std.testing.expectEqual(1, result.tool_calls.len);
+    try std.testing.expectEqualStrings("call_999", result.tool_calls[0].id);
+    try std.testing.expectEqualStrings("get_weather", result.tool_calls[0].name);
+    try std.testing.expectEqual(1, result.tool_calls[0].arguments.len);
+    try std.testing.expectEqualStrings("location", result.tool_calls[0].arguments[0].name);
+    try std.testing.expectEqualStrings("San Francisco", result.tool_calls[0].arguments[0].value);
+
+    const gemini_result: *gemini_types.StreamingStepResult = @ptrCast(@alignCast(result.ptr));
+    try std.testing.expectEqualStrings("interaction_streaming_123", gemini_result.interaction_id);
+    try std.testing.expectEqual(1, call_counts[0]);
+}
+
+test "Gemini.executeStepStreaming with CRLF line endings" {
+    const allocator = std.testing.allocator;
+
+    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}";
+    const response_body_lf =
+        \\event: interaction.created
+        \\data: {"event_type":"interaction.created","interaction":{"id":"interaction_streaming_123"}}
+        \\ 
+        \\event: step.start
+        \\data: {"event_type":"step.start","index":0,"step":{"type":"thought"}}
+        \\ 
+        \\event: step.delta
+        \\data: {"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"Thinking hard"}}}
+        \\ 
+        \\event: step.stop
+        \\data: {"event_type":"step.stop","index":0}
+        \\ 
+        \\event: step.start
+        \\data: {"event_type":"step.start","index":1,"step":{"type":"model_output"}}
+        \\ 
+        \\event: step.delta
+        \\data: {"event_type":"step.delta","index":1,"delta":{"type":"text","text":"Hello from streaming!"}}
+        \\ 
+        \\event: step.stop
+        \\data: {"event_type":"step.stop","index":1}
+        \\ 
+        \\event: step.start
+        \\data: {"event_type":"step.start","index":2,"step":{"type":"function_call","id":"call_999","name":"get_weather","arguments":{}}}
+        \\ 
+        \\event: step.delta
+        \\data: {"event_type":"step.delta","index":2,"delta":{"type":"arguments_delta","arguments":"{\"location\": \"San "}}
+        \\ 
+        \\event: step.delta
+        \\data: {"event_type":"step.delta","index":2,"delta":{"type":"arguments_delta","arguments":"Francisco\"}"}}
+        \\ 
+        \\event: step.stop
+        \\data: {"event_type":"step.stop","index":2}
+        \\ 
+        \\event: interaction.completed
+        \\data: {"event_type":"interaction.completed","interaction":{"id":"interaction_streaming_123"}}
+        \\ 
+        \\event: done
+        \\data: [DONE]
+    ;
+
+    var response_body_crlf_list: std.ArrayList(u8) = .empty;
+    defer response_body_crlf_list.deinit(allocator);
+    var it = std.mem.splitScalar(u8, response_body_lf, '\n');
+    while (it.next()) |line| {
+        try response_body_crlf_list.appendSlice(allocator, line);
+        try response_body_crlf_list.appendSlice(allocator, "\r\n");
+    }
+
+    var call_counts = [_]usize{0};
+    const mock_client = testing.MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = expected_payload,
+                .response_status = .ok,
+                .response_body = response_body_crlf_list.items,
+            },
+        },
+        .sequential = false,
+        .call_counts = &call_counts,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
+        .tools = &.{},
+    };
+    const input = &[_]llm.types.Step{
+        .{ .prompt = "Hello" },
+    };
+
+    const Context = struct {
+        chunks_received: usize = 0,
+        interaction_created_received: bool = false,
+        interaction_completed_received: bool = false,
+        model_output_text: std.Io.Writer.Allocating,
+        thought_text: std.Io.Writer.Allocating,
+        tool_call_arguments_received: bool = false,
+
+        fn callback(ctx_ptr: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr.?));
+            self.chunks_received += 1;
+            switch (chunk.event) {
+                .interaction_created => self.interaction_created_received = true,
+                .interaction_completed => self.interaction_completed_received = true,
+                .step_event => |se| {
+                    switch (se.event) {
+                        .delta => |d| {
+                            switch (d) {
+                                .model_output => |mo| {
+                                    self.model_output_text.writer.writeAll(mo.text) catch {};
+                                },
+                                .thought => |t| {
+                                    self.thought_text.writer.writeAll(t.text) catch {};
+                                },
+                                .tool_call => |args| {
+                                    if (args.len > 0) {
+                                        std.testing.expectEqualStrings("location", args[0].name) catch {};
+                                        if (std.mem.eql(u8, args[0].value, "San Francisco")) {
+                                            self.tool_call_arguments_received = true;
+                                        }
+                                    }
+                                },
+                            }
+                        },
+                        else => {},
+                    }
+                },
+            }
+        }
+    };
+
+    var ctx = Context{
+        .model_output_text = std.Io.Writer.Allocating.init(allocator),
+        .thought_text = std.Io.Writer.Allocating.init(allocator),
+    };
+    defer ctx.model_output_text.deinit();
+    defer ctx.thought_text.deinit();
+
+    var result = try p.executeStepStreaming(allocator, config, input, null, Context.callback, &ctx);
+    defer result.deinit();
+
+    // Verify callback executions
+    try std.testing.expect(ctx.chunks_received > 0);
+    try std.testing.expect(ctx.interaction_created_received);
+    try std.testing.expect(ctx.interaction_completed_received);
+    try std.testing.expectEqualStrings("Hello from streaming!", ctx.model_output_text.written());
+    try std.testing.expectEqualStrings("Thinking hard", ctx.thought_text.written());
 
     // Verify accumulated StepResult
     try std.testing.expectEqual(1, result.model_output.len);

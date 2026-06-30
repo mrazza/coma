@@ -77,12 +77,6 @@ pub fn executeStep(
     return provider.vtable.execute_step(provider.ptr, allocator, session_config, input, previous_step);
 }
 
-// TODO(razza): It's odd that the StreamingChunk passed to the StreamingCallback is not owned by the callback,
-// meaning it can't store it for later use. This effectively forces the callback to copy the data.
-// Is this really the best way to do this? Is there a pattern that would make this less awkward?
-// If not, we should clean up the object to not allocate on the heap and require deinit; and, instead,
-// pass by reference.
-
 /// Executes a single step of interaction with the LLM provider, streaming chunks back to the callback.
 ///
 /// `allocator` is used to allocate internal streaming state and structures in the final returned `StepResult`.
@@ -93,8 +87,8 @@ pub fn executeStep(
 /// `callback_context` is user-provided context passed back to the callback function.
 ///
 /// **Memory Alert**:
-/// - The chunks sent to `callback` are managed/freed by the provider after the callback returns.
-///   The callback must copy any data it needs to retain past the execution of the callback.
+/// - The chunks sent to `callback` are managed by the Provider and will be freed after the callback returns.
+///   The callback must copy/duplicate any data it needs to retain past the execution of the callback.
 /// - The caller **MUST** call `deinit()` on the returned final `StepResult` to free the accumulated response contents.
 pub fn executeStepStreaming(
     provider: *Provider,

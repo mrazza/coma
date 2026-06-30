@@ -183,19 +183,6 @@ pub const StreamingChunk = struct {
     /// The generic event that occurred.
     event: Event,
 
-    ptr: *anyopaque,
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        deinit: *const fn (ptr: *anyopaque) void,
-    };
-
-    /// Frees the resources associated with the StreamingChunk.
-    pub fn deinit(self: *StreamingChunk) void {
-        self.vtable.deinit(self.ptr);
-        self.* = undefined;
-    }
-
     /// The generic stream event.
     pub const Event = union(enum) {
         /// Fired when a new streaming interaction session is successfully initialized.
