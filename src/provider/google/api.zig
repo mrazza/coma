@@ -222,6 +222,7 @@ pub const FunctionArgument = struct {
         defer arguments.deinit(allocator);
         var argument_iterator = source.object.iterator();
         while (argument_iterator.next()) |arg| {
+            if (arg.value_ptr.* != .string) return error.UnexpectedToken;
             const key = arg.key_ptr.*;
             const value = arg.value_ptr.string;
             try arguments.append(allocator, FunctionArgument{

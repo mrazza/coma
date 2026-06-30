@@ -361,7 +361,7 @@ fn MakeProvider(comptime ClientType: type) type {
                     },
                     .tool_call => |*tc| {
                         const json_parsed_args = std.json.parseFromSlice(std.json.Value, result_arena.allocator(), tc.arguments_json.written(), .{}) catch return ProviderError.BadResponse;
-                        const function_arguments = try api.FunctionArgument.parseFromJsonObject(result_arena.allocator(), json_parsed_args.value);
+                        const function_arguments = api.FunctionArgument.parseFromJsonObject(result_arena.allocator(), json_parsed_args.value) catch return ProviderError.BadResponse;
                         const parsed_args: []llm.types.Argument = try result_arena.allocator().alloc(llm.types.Argument, function_arguments.len);
                         for (function_arguments, 0..) |curr_arg, index| {
                             parsed_args[index] = .{ .name = curr_arg.name, .value = curr_arg.value };
