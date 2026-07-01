@@ -82,6 +82,8 @@ pub const Function = struct {
         pub const Property = union(enum) {
             string: StandardProperty,
             integer: StandardProperty,
+            number: StandardProperty,
+            boolean: StandardProperty,
             array: ArrayProperty,
 
             pub fn jsonStringify(self: Property, jw: anytype) !void {
@@ -604,9 +606,9 @@ test "ArrayProperty jsonStringify" {
     try std.testing.expectEqualStrings("{\"description\":\"Some array\",\"items\":{\"type\":\"string\"}}", list.written());
 }
 
-test "Property jsonStringify" {
+test "Property string jsonStringify" {
     const allocator = std.testing.allocator;
-    const prop_str = Function.Parameters.Property{
+    const prop = Function.Parameters.Property{
         .string = .{
             .name = "str_prop",
             .description = "String property",
@@ -617,9 +619,100 @@ test "Property jsonStringify" {
     defer list.deinit();
     var jw = std.json.Stringify{ .writer = &list.writer, .options = .{} };
     try jw.beginObject();
-    try prop_str.jsonStringify(&jw);
+    try prop.jsonStringify(&jw);
     try jw.endObject();
     try std.testing.expectEqualStrings("{\"str_prop\":{\"type\":\"string\",\"description\":\"String property\"}}", list.written());
+}
+
+test "Property string with enum values jsonStringify" {
+    const allocator = std.testing.allocator;
+    const enum_vals = &[_][]const u8{ "VAL1", "VAL2" };
+    const prop = Function.Parameters.Property{
+        .string = .{
+            .name = "enum_prop",
+            .description = "Enum property",
+            .enum_values = enum_vals,
+        },
+    };
+    var list: std.Io.Writer.Allocating = .init(allocator);
+    defer list.deinit();
+    var jw = std.json.Stringify{ .writer = &list.writer, .options = .{} };
+    try jw.beginObject();
+    try prop.jsonStringify(&jw);
+    try jw.endObject();
+    try std.testing.expectEqualStrings("{\"enum_prop\":{\"type\":\"string\",\"description\":\"Enum property\",\"enum\":[\"VAL1\",\"VAL2\"]}}", list.written());
+}
+
+test "Property integer jsonStringify" {
+    const allocator = std.testing.allocator;
+    const prop = Function.Parameters.Property{
+        .integer = .{
+            .name = "int_prop",
+            .description = "Integer property",
+            .enum_values = null,
+        },
+    };
+    var list: std.Io.Writer.Allocating = .init(allocator);
+    defer list.deinit();
+    var jw = std.json.Stringify{ .writer = &list.writer, .options = .{} };
+    try jw.beginObject();
+    try prop.jsonStringify(&jw);
+    try jw.endObject();
+    try std.testing.expectEqualStrings("{\"int_prop\":{\"type\":\"integer\",\"description\":\"Integer property\"}}", list.written());
+}
+
+test "Property number jsonStringify" {
+    const allocator = std.testing.allocator;
+    const prop = Function.Parameters.Property{
+        .number = .{
+            .name = "num_prop",
+            .description = "Number property",
+            .enum_values = null,
+        },
+    };
+    var list: std.Io.Writer.Allocating = .init(allocator);
+    defer list.deinit();
+    var jw = std.json.Stringify{ .writer = &list.writer, .options = .{} };
+    try jw.beginObject();
+    try prop.jsonStringify(&jw);
+    try jw.endObject();
+    try std.testing.expectEqualStrings("{\"num_prop\":{\"type\":\"number\",\"description\":\"Number property\"}}", list.written());
+}
+
+test "Property boolean jsonStringify" {
+    const allocator = std.testing.allocator;
+    const prop = Function.Parameters.Property{
+        .boolean = .{
+            .name = "bool_prop",
+            .description = "Boolean property",
+            .enum_values = null,
+        },
+    };
+    var list: std.Io.Writer.Allocating = .init(allocator);
+    defer list.deinit();
+    var jw = std.json.Stringify{ .writer = &list.writer, .options = .{} };
+    try jw.beginObject();
+    try prop.jsonStringify(&jw);
+    try jw.endObject();
+    try std.testing.expectEqualStrings("{\"bool_prop\":{\"type\":\"boolean\",\"description\":\"Boolean property\"}}", list.written());
+}
+
+test "Property array jsonStringify" {
+    const allocator = std.testing.allocator;
+    const prop = Function.Parameters.Property{
+        .array = .{
+            .name = "arr_prop",
+            .description = "Array property",
+            .item_type = "string",
+        },
+    };
+    var list: std.Io.Writer.Allocating = .init(allocator);
+    defer list.deinit();
+    var jw = std.json.Stringify{ .writer = &list.writer, .options = .{} };
+    try jw.beginObject();
+    try prop.jsonStringify(&jw);
+    try jw.endObject();
+    try std.testing.expectEqualStrings("{\"arr_prop\":{\"type\":\"array\",\"description\":\"Array property\",\"items\":{\"type\":\"string\"}}}", list.written());
 }
 
 test "InteractionStreamEvent jsonParse step.start function_call with arguments and skip key" {

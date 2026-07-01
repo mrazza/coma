@@ -21,8 +21,13 @@ pub const Tool = struct {
     /// Defines a parameter for a tool.
     pub const Param = struct {
         /// Supported data types for a parameter.
-        pub const Type = enum {
+        pub const Type = union(enum) {
             string,
+            integer,
+            float,
+            boolean,
+            enumeration: []const []const u8,
+            array: *const Type,
         };
 
         /// The name of the parameter.

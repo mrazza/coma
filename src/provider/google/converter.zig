@@ -4,6 +4,17 @@ const api = @import("api.zig");
 
 const Allocator = std.mem.Allocator;
 
+fn getTypeName(t: llm.types.Tool.Param.Type) []const u8 {
+    return switch (t) {
+        .string => "string",
+        .integer => "integer",
+        .float => "number",
+        .boolean => "boolean",
+        .enumeration => "string",
+        .array => "array",
+    };
+}
+
 /// Converts a generic `llm.types.Tool` into a Gemini API-specific `api.Tool`.
 pub fn toGoogleTool(arena: Allocator, tool: llm.types.Tool) !api.Tool {
     const properties = if (tool.parameters.len > 0) try arena.alloc(api.Function.Parameters.Property, tool.parameters.len) else null;
@@ -39,6 +50,51 @@ pub fn toGoogleTool(arena: Allocator, tool: llm.types.Tool) !api.Tool {
                             .name = param.name,
                             .description = param.description,
                             .enum_values = null,
+                        },
+                    };
+                },
+                .integer => {
+                    p[i] = .{
+                        .integer = .{
+                            .name = param.name,
+                            .description = param.description,
+                            .enum_values = null,
+                        },
+                    };
+                },
+                .float => {
+                    p[i] = .{
+                        .number = .{
+                            .name = param.name,
+                            .description = param.description,
+                            .enum_values = null,
+                        },
+                    };
+                },
+                .boolean => {
+                    p[i] = .{
+                        .boolean = .{
+                            .name = param.name,
+                            .description = param.description,
+                            .enum_values = null,
+                        },
+                    };
+                },
+                .enumeration => |values| {
+                    p[i] = .{
+                        .string = .{
+                            .name = param.name,
+                            .description = param.description,
+                            .enum_values = values,
+                        },
+                    };
+                },
+                .array => |inner| {
+                    p[i] = .{
+                        .array = .{
+                            .name = param.name,
+                            .description = param.description,
+                            .item_type = getTypeName(inner.*),
                         },
                     };
                 },
@@ -238,6 +294,143 @@ test "toGoogleTool with no parameters" {
     try std.testing.expectEqualStrings("A tool with no parameters", google_tool.function.description);
     try std.testing.expect(google_tool.function.parameters.properties == null);
     try std.testing.expect(google_tool.function.parameters.required == null);
+}
+
+test "toGoogleTool with integer parameter" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const tool = llm.types.Tool{
+        .name = "my_tool",
+        .description = "Test integer tool",
+        .parameters = &.{
+            .{
+                .name = "max_results",
+                .description = "Maximum results limit",
+                .type = .integer,
+            },
+        },
+    };
+
+    const google_tool = try toGoogleTool(arena_allocator, tool);
+    const properties = google_tool.function.parameters.properties.?;
+    try std.testing.expectEqual(1, properties.len);
+    try std.testing.expectEqualStrings("max_results", properties[0].integer.name);
+    try std.testing.expectEqualStrings("Maximum results limit", properties[0].integer.description);
+}
+
+test "toGoogleTool with float parameter" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const tool = llm.types.Tool{
+        .name = "my_tool",
+        .description = "Test float tool",
+        .parameters = &.{
+            .{
+                .name = "price_limit",
+                .description = "Max price per night",
+                .type = .float,
+            },
+        },
+    };
+
+    const google_tool = try toGoogleTool(arena_allocator, tool);
+    const properties = google_tool.function.parameters.properties.?;
+    try std.testing.expectEqual(1, properties.len);
+    try std.testing.expectEqualStrings("price_limit", properties[0].number.name);
+    try std.testing.expectEqualStrings("Max price per night", properties[0].number.description);
+}
+
+test "toGoogleTool with boolean parameter" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const tool = llm.types.Tool{
+        .name = "my_tool",
+        .description = "Test boolean tool",
+        .parameters = &.{
+            .{
+                .name = "has_pool",
+                .description = "Must have a pool",
+                .type = .boolean,
+            },
+        },
+    };
+
+    const google_tool = try toGoogleTool(arena_allocator, tool);
+    const properties = google_tool.function.parameters.properties.?;
+    try std.testing.expectEqual(1, properties.len);
+    try std.testing.expectEqualStrings("has_pool", properties[0].boolean.name);
+    try std.testing.expectEqualStrings("Must have a pool", properties[0].boolean.description);
+}
+
+test "toGoogleTool with enumeration parameter" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const tool = llm.types.Tool{
+        .name = "my_tool",
+        .description = "Test enumeration tool",
+        .parameters = &.{
+            .{
+                .name = "sort_by",
+                .description = "Sort criteria",
+                .type = .{ .enumeration = &.{ "price", "rating", "distance" } },
+            },
+        },
+    };
+
+    const google_tool = try toGoogleTool(arena_allocator, tool);
+    const properties = google_tool.function.parameters.properties.?;
+    try std.testing.expectEqual(1, properties.len);
+    try std.testing.expectEqualStrings("sort_by", properties[0].string.name);
+    try std.testing.expectEqualStrings("Sort criteria", properties[0].string.description);
+    const enum_vals = properties[0].string.enum_values.?;
+    try std.testing.expectEqual(3, enum_vals.len);
+    try std.testing.expectEqualStrings("price", enum_vals[0]);
+    try std.testing.expectEqualStrings("rating", enum_vals[1]);
+    try std.testing.expectEqualStrings("distance", enum_vals[2]);
+}
+
+test "toGoogleTool with array parameter" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const tool = llm.types.Tool{
+        .name = "my_tool",
+        .description = "Test array tool",
+        .parameters = &.{
+            .{
+                .name = "amenities",
+                .description = "Required amenities list",
+                .type = .{ .array = &.string },
+            },
+            .{
+                .name = "nested_matrix",
+                .description = "A 2D string matrix",
+                .type = .{ .array = &.{ .array = &.string } },
+            },
+        },
+    };
+
+    const google_tool = try toGoogleTool(arena_allocator, tool);
+    const properties = google_tool.function.parameters.properties.?;
+    try std.testing.expectEqual(2, properties.len);
+    try std.testing.expectEqualStrings("amenities", properties[0].array.name);
+    try std.testing.expectEqualStrings("string", properties[0].array.item_type);
+    try std.testing.expectEqualStrings("nested_matrix", properties[1].array.name);
+    try std.testing.expectEqualStrings("array", properties[1].array.item_type);
 }
 
 test toGoogleStep {
