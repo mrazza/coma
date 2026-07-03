@@ -86,7 +86,7 @@ pub fn executeStep(
 /// `callback` is called with incremental response chunks as they arrive.
 /// `callback_context` is user-provided context passed back to the callback function.
 ///
-/// **Memory Alert**:
+/// Memory Behavior:
 /// - The chunks sent to `callback` are managed by the Provider and will be freed after the callback returns.
 ///   The callback must copy/duplicate any data it needs to retain past the execution of the callback.
 /// - The caller **MUST** call `deinit()` on the returned final `StepResult` to free the accumulated response contents.
