@@ -218,18 +218,20 @@ pub fn dupeArguments(allocator: Allocator, args: []const api.FunctionArgument) !
             .float => |v| llm.types.Argument.Value{ .float = v },
             .boolean => |v| llm.types.Argument.Value{ .boolean = v },
         };
-        defer initialized += 1;
         errdefer switch (val) {
             .string => |s| allocator.free(s),
             else => {},
         };
 
         const name = try allocator.dupe(u8, arg.name);
+        errdefer allocator.free(name);
 
         result[i] = .{
             .name = name,
             .value = val,
         };
+
+        initialized += 1;
     }
     return result;
 }
@@ -636,8 +638,9 @@ test "dupeArguments OOM" {
 test "dupeArguments OOM triggered errdefer" {
     const args = &[_]api.FunctionArgument{
         .{ .name = "param", .value = .{ .string = "val" } },
+        .{ .name = "param2", .value = .{ .string = "val" } },
     };
-    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 2 });
     const allocator = failing.allocator();
     try std.testing.expectError(error.OutOfMemory, dupeArguments(allocator, args));
 }
