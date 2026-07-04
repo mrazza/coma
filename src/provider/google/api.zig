@@ -17,6 +17,21 @@ fn jsonStringifyFields(object: anytype, jw: anytype) !void {
     }
 }
 
+/// Converts a `std.json.Value` to a corresponding `llm.types.Argument.Value`.
+/// Returns `null` if the JSON value is `null`, and returns `error.UnexpectedToken`
+/// if the value is an unsupported type (e.g., object or array).
+fn jsonValueToArgumentValue(val: std.json.Value) !?llm.types.Argument.Value {
+    return switch (val) {
+        .string => |s| .{ .string = s },
+        .number_string => |s| .{ .string = s },
+        .integer => |i| .{ .integer = i },
+        .float => |f| .{ .float = f },
+        .bool => |b| .{ .boolean = b },
+        .null => null,
+        else => return error.UnexpectedToken,
+    };
+}
+
 /// The response format for listing available Gemini models.
 pub const ListModelsResponse = struct { models: []GeminiModel, nextPageToken: ?[]const u8 = null };
 
@@ -214,18 +229,6 @@ pub const Content = struct {
     type: Type,
     text: ?[]const u8 = null,
 };
-
-fn jsonValueToArgumentValue(val: std.json.Value) !?llm.types.Argument.Value {
-    return switch (val) {
-        .string => |s| .{ .string = s },
-        .number_string => |s| .{ .string = s },
-        .integer => |i| .{ .integer = i },
-        .float => |f| .{ .float = f },
-        .bool => |b| .{ .boolean = b },
-        .null => null,
-        else => return error.UnexpectedToken,
-    };
-}
 
 /// Represents an argument to a function call.
 pub const FunctionArgument = struct {
@@ -781,5 +784,46 @@ test "InteractionStreamEvent jsonParse missing event_type" {
 test "InteractionStreamEvent jsonParse unexpected event_type" {
     const allocator = std.testing.allocator;
     const payload = "{ \"event_type\": \"invalid.event\" }";
+    try std.testing.expectError(error.UnexpectedToken, std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true }));
+}
+
+test "FunctionArgument parseFromJsonObject all value types" {
+    const allocator = std.testing.allocator;
+    var map = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer map.deinit(allocator);
+
+    try map.put(allocator, "str", .{ .string = "hello" });
+    try map.put(allocator, "num_str", .{ .number_string = "12345" });
+    try map.put(allocator, "int", .{ .integer = 42 });
+    try map.put(allocator, "flt", .{ .float = 3.14 });
+    try map.put(allocator, "bl", .{ .bool = true });
+    try map.put(allocator, "nl", .null);
+
+    const val = std.json.Value{ .object = map };
+    const function_arguments = try FunctionArgument.parseFromJsonObject(allocator, val);
+    defer allocator.free(function_arguments);
+
+    try std.testing.expectEqual(5, function_arguments.len);
+
+    for (function_arguments) |arg| {
+        if (std.mem.eql(u8, arg.name, "str")) {
+            try std.testing.expectEqualStrings("hello", arg.value.string);
+        } else if (std.mem.eql(u8, arg.name, "num_str")) {
+            try std.testing.expectEqualStrings("12345", arg.value.string);
+        } else if (std.mem.eql(u8, arg.name, "int")) {
+            try std.testing.expectEqual(@as(i64, 42), arg.value.integer);
+        } else if (std.mem.eql(u8, arg.name, "flt")) {
+            try std.testing.expectEqual(@as(f64, 3.14), arg.value.float);
+        } else if (std.mem.eql(u8, arg.name, "bl")) {
+            try std.testing.expectEqual(true, arg.value.boolean);
+        } else {
+            try std.testing.expect(false);
+        }
+    }
+}
+
+test "InteractionStreamEvent jsonParse step.start function_call with invalid argument type" {
+    const allocator = std.testing.allocator;
+    const payload = "{ \"index\": 0, \"step\": {\"type\": \"function_call\", \"id\":\"un6k8t18\", \"name\": \"get_weather\", \"arguments\":{\"location\":[]}}, \"event_type\": \"step.start\" }";
     try std.testing.expectError(error.UnexpectedToken, std.json.parseFromSlice(InteractionStreamEvent, allocator, payload, .{ .ignore_unknown_fields = true }));
 }
