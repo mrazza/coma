@@ -45,6 +45,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const agent = b.addModule("agent", .{
+        .root_source_file = b.path("src/agent/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "provider", .module = provider },
+        },
+    });
+
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Zig modules are the preferred way of making Zig code available to consumers.
@@ -66,6 +75,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "llm", .module = llm },
             .{ .name = "provider", .module = provider },
+            .{ .name = "agent", .module = agent },
         },
     });
 
@@ -109,6 +119,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "coma", .module = mod },
                 .{ .name = "llm", .module = llm },
                 .{ .name = "provider", .module = provider },
+                .{ .name = "agent", .module = agent },
             },
         }),
     });
@@ -171,6 +182,11 @@ pub fn build(b: *std.Build) void {
     });
     const run_provider_tests = b.addRunArtifact(provider_tests);
 
+    const agent_tests = b.addTest(.{
+        .root_module = agent,
+    });
+    const run_agent_test = b.addRunArtifact(agent_tests);
+
     // Creates an executable that will run `test` blocks from the llm module.
     const llm_test_module = b.createModule(.{
         .root_source_file = b.path("src/llm/root.tests.zig"),
@@ -199,6 +215,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_provider_tests.step);
+    test_step.dependOn(&run_agent_test.step);
     test_step.dependOn(&run_llm_tests.step);
     test_step.dependOn(&run_testing_tests.step);
 
@@ -207,6 +224,7 @@ pub fn build(b: *std.Build) void {
         mod_tests,
         exe_tests,
         provider_tests,
+        agent_tests,
         llm_tests,
         testing_tests,
     };
@@ -221,6 +239,7 @@ pub fn build(b: *std.Build) void {
         "kcov-out/suite_2",
         "kcov-out/suite_3",
         "kcov-out/suite_4",
+        "kcov-out/suite_5",
     });
     for (test_suites, 0..) |test_exe, i| {
         const out_dir = b.fmt("kcov-out/suite_{d}", .{i});
