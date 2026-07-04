@@ -1,4 +1,5 @@
 const std = @import("std");
+const llm = @import("llm");
 
 /// A generic JSON stringifier that iterates over the fields of a struct.
 /// It skips fields that are optional and have a null value.
@@ -214,23 +215,36 @@ pub const Content = struct {
     text: ?[]const u8 = null,
 };
 
+fn jsonValueToArgumentValue(val: std.json.Value) !?llm.types.Argument.Value {
+    return switch (val) {
+        .string => |s| .{ .string = s },
+        .number_string => |s| .{ .string = s },
+        .integer => |i| .{ .integer = i },
+        .float => |f| .{ .float = f },
+        .bool => |b| .{ .boolean = b },
+        .null => null,
+        else => return error.UnexpectedToken,
+    };
+}
+
 /// Represents an argument to a function call.
 pub const FunctionArgument = struct {
     name: []const u8,
-    value: []const u8,
+    value: llm.types.Argument.Value,
 
     pub fn parseFromJsonObject(allocator: std.mem.Allocator, source: std.json.Value) ![]FunctionArgument {
         var arguments: std.ArrayList(FunctionArgument) = .empty;
         defer arguments.deinit(allocator);
         var argument_iterator = source.object.iterator();
         while (argument_iterator.next()) |arg| {
-            if (arg.value_ptr.* != .string) return error.UnexpectedToken;
             const key = arg.key_ptr.*;
-            const value = arg.value_ptr.string;
-            try arguments.append(allocator, FunctionArgument{
-                .name = key,
-                .value = value,
-            });
+            const value = try jsonValueToArgumentValue(arg.value_ptr.*);
+            if (value) |v| {
+                try arguments.append(allocator, FunctionArgument{
+                    .name = key,
+                    .value = v,
+                });
+            }
         }
         return try arguments.toOwnedSlice(allocator);
     }
@@ -251,14 +265,16 @@ pub const FunctionCall = struct {
         var argument_iterator = arguments_value.object.iterator();
         while (argument_iterator.next()) |arg| {
             const key = arg.key_ptr.*;
-            const value = arg.value_ptr.string;
             if (std.mem.eql(u8, key, "name") or std.mem.eql(u8, key, "id")) {
                 continue;
             }
-            try arguments.append(allocator, FunctionArgument{
-                .name = key,
-                .value = value,
-            });
+            const value = try jsonValueToArgumentValue(arg.value_ptr.*);
+            if (value) |v| {
+                try arguments.append(allocator, FunctionArgument{
+                    .name = key,
+                    .value = v,
+                });
+            }
         }
         return FunctionCall{
             .id = id,
@@ -555,9 +571,33 @@ test "FunctionArgument parseFromJsonObject" {
     const function_arguments = try FunctionArgument.parseFromJsonObject(allocator, json_value.value);
     defer allocator.free(function_arguments);
     try std.testing.expectEqualStrings("location", function_arguments[0].name);
-    try std.testing.expectEqualStrings("San Francisco, CA", function_arguments[0].value);
+    try std.testing.expectEqualStrings("San Francisco, CA", function_arguments[0].value.string);
     try std.testing.expectEqualStrings("date", function_arguments[1].name);
-    try std.testing.expectEqualStrings("2026-06-28", function_arguments[1].value);
+    try std.testing.expectEqualStrings("2026-06-28", function_arguments[1].value.string);
+}
+
+test "FunctionArgument parseFromJsonObject with non-string values" {
+    const allocator = std.testing.allocator;
+    const payload = "{\"zip_code\": 7302, \"active\": true, \"null_val\": null}";
+    const json_value = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{ .ignore_unknown_fields = true });
+    defer json_value.deinit();
+    const function_arguments = try FunctionArgument.parseFromJsonObject(allocator, json_value.value);
+    defer allocator.free(function_arguments);
+
+    var found_zip = false;
+    var found_active = false;
+    for (function_arguments) |arg| {
+        if (std.mem.eql(u8, arg.name, "zip_code")) {
+            try std.testing.expectEqual(@as(i64, 7302), arg.value.integer);
+            found_zip = true;
+        } else if (std.mem.eql(u8, arg.name, "active")) {
+            try std.testing.expectEqual(true, arg.value.boolean);
+            found_active = true;
+        }
+    }
+    try std.testing.expectEqual(2, function_arguments.len);
+    try std.testing.expect(found_zip);
+    try std.testing.expect(found_active);
 }
 
 test "GoogleSearch jsonStringify" {
@@ -729,7 +769,7 @@ test "InteractionStreamEvent jsonParse step.start function_call with arguments a
     try std.testing.expectEqualStrings("get_weather", function_call_step.name);
     try std.testing.expectEqual(1, function_call_step.arguments.len);
     try std.testing.expectEqualStrings("location", function_call_step.arguments[0].name);
-    try std.testing.expectEqualStrings("Chicago", function_call_step.arguments[0].value);
+    try std.testing.expectEqualStrings("Chicago", function_call_step.arguments[0].value.string);
 }
 
 test "InteractionStreamEvent jsonParse missing event_type" {

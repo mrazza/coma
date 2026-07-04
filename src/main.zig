@@ -260,6 +260,18 @@ pub fn main(init: std.process.Init) !void {
                     },
                 },
             },
+            .{
+                .name = "get_weather",
+                .description = "Get the current weather for a given zip code.",
+                .parameters = &.{
+                    .{
+                        .name = "zip_code",
+                        .type = .integer,
+                        .required = true,
+                        .description = "The 5-digit zip code to get the weather for.",
+                    },
+                },
+            },
         },
     };
 
@@ -294,7 +306,7 @@ pub fn main(init: std.process.Init) !void {
         } else {
             for (last_step.?.tool_calls) |tool_call| {
                 if (std.mem.eql(u8, tool_call.name, "execute_typescript")) {
-                    const code = tool_call.arguments[0].value;
+                    const code = tool_call.arguments[0].value.string;
                     std.debug.print("\n{s}Executing TypeScript code...{s}\n", .{ color_yellow, color_reset });
                     std.debug.print("{s}--- CODE ---{s}\n{s}\n{s}------------{s}\n", .{ color_gray, color_reset, code, color_gray, color_reset });
                     const argv = [_][]const u8{
@@ -315,6 +327,27 @@ pub fn main(init: std.process.Init) !void {
                         try new_steps.append(allocator, .{ .tool_result = tool_result });
                         allocator.free(result.stderr);
                     }
+                } else if (std.mem.eql(u8, tool_call.name, "get_weather")) {
+                    const zip_val = tool_call.arguments[0].value;
+                    const zip = switch (zip_val) {
+                        .integer => |v| v,
+                        else => -1,
+                    };
+                    const result_str = if (zip == 7302)
+                        try allocator.dupe(u8, "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph")
+                    else
+                        try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip});
+
+                    std.debug.print("\n{s}Executing get_weather for zip code {}...{s}\n", .{ color_yellow, zip, color_reset });
+
+                    const tool_result: llm.types.ToolResult = .{
+                        .tool_name = tool_call.name,
+                        .id = tool_call.id,
+                        .result = result_str,
+                    };
+                    std.debug.print("{s}Output:{s}\n{s}\n", .{ color_green, color_reset, result_str });
+                    try last_tool_results.append(allocator, tool_result);
+                    try new_steps.append(allocator, .{ .tool_result = tool_result });
                 }
             }
         }
