@@ -200,8 +200,9 @@ pub fn toArguments(allocator: Allocator, args: []const api.FunctionArgument) ![]
 /// Caller owns the returned slice and the individual strings.
 pub fn dupeArguments(allocator: Allocator, args: []const api.FunctionArgument) ![]llm.types.Argument {
     const result = try allocator.alloc(llm.types.Argument, args.len);
+    var initialized: usize = 0;
     errdefer {
-        for (result) |arg| {
+        for (result[0..initialized]) |arg| {
             allocator.free(arg.name);
             switch (arg.value) {
                 .string => |s| allocator.free(s),
@@ -217,8 +218,16 @@ pub fn dupeArguments(allocator: Allocator, args: []const api.FunctionArgument) !
             .float => |v| llm.types.Argument.Value{ .float = v },
             .boolean => |v| llm.types.Argument.Value{ .boolean = v },
         };
+        defer initialized += 1;
+        errdefer switch (val) {
+            .string => |s| allocator.free(s),
+            else => {},
+        };
+
+        const name = try allocator.dupe(u8, arg.name);
+
         result[i] = .{
-            .name = try allocator.dupe(u8, arg.name),
+            .name = name,
             .value = val,
         };
     }
@@ -533,7 +542,10 @@ test toArguments {
 test dupeArguments {
     const allocator = std.testing.allocator;
     const args = &[_]api.FunctionArgument{
-        .{ .name = "param", .value = .{ .string = "value" } },
+        .{ .name = "str", .value = .{ .string = "value" } },
+        .{ .name = "int", .value = .{ .integer = 42 } },
+        .{ .name = "flt", .value = .{ .float = 3.14 } },
+        .{ .name = "bl", .value = .{ .boolean = true } },
     };
 
     const generic_duped = try dupeArguments(allocator, args);
@@ -547,9 +559,15 @@ test dupeArguments {
         }
         allocator.free(generic_duped);
     }
-    try std.testing.expectEqual(1, generic_duped.len);
-    try std.testing.expectEqualStrings("param", generic_duped[0].name);
+    try std.testing.expectEqual(4, generic_duped.len);
+    try std.testing.expectEqualStrings("str", generic_duped[0].name);
     try std.testing.expectEqualStrings("value", generic_duped[0].value.string);
+    try std.testing.expectEqualStrings("int", generic_duped[1].name);
+    try std.testing.expectEqual(@as(i64, 42), generic_duped[1].value.integer);
+    try std.testing.expectEqualStrings("flt", generic_duped[2].name);
+    try std.testing.expectEqual(@as(f64, 3.14), generic_duped[2].value.float);
+    try std.testing.expectEqualStrings("bl", generic_duped[3].name);
+    try std.testing.expectEqual(true, generic_duped[3].value.boolean);
 }
 
 test toModels {
@@ -613,6 +631,15 @@ test "dupeArguments OOM" {
         .{ .name = "param", .value = .{ .string = "val" } },
     };
     try std.testing.expectError(error.OutOfMemory, dupeArguments(std.testing.failing_allocator, args));
+}
+
+test "dupeArguments OOM triggered errdefer" {
+    const args = &[_]api.FunctionArgument{
+        .{ .name = "param", .value = .{ .string = "val" } },
+    };
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    const allocator = failing.allocator();
+    try std.testing.expectError(error.OutOfMemory, dupeArguments(allocator, args));
 }
 
 test "toModels OOM" {
