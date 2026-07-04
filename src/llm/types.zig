@@ -80,8 +80,15 @@ pub const Thought = struct {
 
 /// An argument provided to a tool call.
 pub const Argument = struct {
+    pub const Value = union(enum) {
+        string: []const u8,
+        integer: i64,
+        float: f64,
+        boolean: bool,
+    };
+
     name: []const u8,
-    value: []const u8,
+    value: Value,
 };
 
 /// Represents a request by the model to call a specific tool.

@@ -275,7 +275,10 @@ fn MakeProvider(comptime ClientType: type) type {
                         defer {
                             for (arguments) |arg| {
                                 allocator.free(arg.name);
-                                allocator.free(arg.value);
+                                switch (arg.value) {
+                                    .string => |s| allocator.free(s),
+                                    else => {},
+                                }
                             }
                             allocator.free(arguments);
                         }
@@ -486,7 +489,10 @@ const StepAccumulator = union(enum) {
         errdefer {
             for (arguments) |arg| {
                 allocator.free(arg.name);
-                allocator.free(arg.value);
+                switch (arg.value) {
+                    .string => |s| allocator.free(s),
+                    else => {},
+                }
             }
             allocator.free(arguments);
         }
@@ -957,7 +963,7 @@ test "Gemini.executeStepStreaming success" {
                                 .tool_call => |args| {
                                     if (args.len > 0) {
                                         std.testing.expectEqualStrings("location", args[0].name) catch {};
-                                        if (std.mem.eql(u8, args[0].value, "San Francisco")) {
+                                        if (std.mem.eql(u8, args[0].value.string, "San Francisco")) {
                                             self.tool_call_arguments_received = true;
                                         }
                                     }
@@ -999,7 +1005,7 @@ test "Gemini.executeStepStreaming success" {
     try std.testing.expectEqualStrings("get_weather", result.tool_calls[0].name);
     try std.testing.expectEqual(1, result.tool_calls[0].arguments.len);
     try std.testing.expectEqualStrings("location", result.tool_calls[0].arguments[0].name);
-    try std.testing.expectEqualStrings("San Francisco", result.tool_calls[0].arguments[0].value);
+    try std.testing.expectEqualStrings("San Francisco", result.tool_calls[0].arguments[0].value.string);
 
     const gemini_result: *gemini_types.StreamingStepResult = @ptrCast(@alignCast(result.ptr));
     try std.testing.expectEqualStrings("interaction_streaming_123", gemini_result.interaction_id);
@@ -1117,7 +1123,7 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
                                 .tool_call => |args| {
                                     if (args.len > 0) {
                                         std.testing.expectEqualStrings("location", args[0].name) catch {};
-                                        if (std.mem.eql(u8, args[0].value, "San Francisco")) {
+                                        if (std.mem.eql(u8, args[0].value.string, "San Francisco")) {
                                             self.tool_call_arguments_received = true;
                                         }
                                     }
@@ -1158,7 +1164,7 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
     try std.testing.expectEqualStrings("get_weather", result.tool_calls[0].name);
     try std.testing.expectEqual(1, result.tool_calls[0].arguments.len);
     try std.testing.expectEqualStrings("location", result.tool_calls[0].arguments[0].name);
-    try std.testing.expectEqualStrings("San Francisco", result.tool_calls[0].arguments[0].value);
+    try std.testing.expectEqualStrings("San Francisco", result.tool_calls[0].arguments[0].value.string);
 
     const gemini_result: *gemini_types.StreamingStepResult = @ptrCast(@alignCast(result.ptr));
     try std.testing.expectEqualStrings("interaction_streaming_123", gemini_result.interaction_id);
@@ -1237,7 +1243,10 @@ test "StepAccumulator mismatch delta and init tool_call" {
     defer {
         for (args.?) |arg| {
             allocator.free(arg.name);
-            allocator.free(arg.value);
+            switch (arg.value) {
+                .string => |s| allocator.free(s),
+                else => {},
+            }
         }
         allocator.free(args.?);
     }
@@ -1307,7 +1316,7 @@ test "Gemini.executeStep returns function call" {
     try std.testing.expectEqualStrings("get_weather", result.tool_calls[0].name);
     try std.testing.expectEqual(1, result.tool_calls[0].arguments.len);
     try std.testing.expectEqualStrings("location", result.tool_calls[0].arguments[0].name);
-    try std.testing.expectEqualStrings("Miami", result.tool_calls[0].arguments[0].value);
+    try std.testing.expectEqualStrings("Miami", result.tool_calls[0].arguments[0].value.string);
 }
 
 test "Gemini.executeStepStreaming multiple interaction_created" {

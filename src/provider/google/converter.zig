@@ -203,14 +203,23 @@ pub fn dupeArguments(allocator: Allocator, args: []const api.FunctionArgument) !
     errdefer {
         for (result) |arg| {
             allocator.free(arg.name);
-            allocator.free(arg.value);
+            switch (arg.value) {
+                .string => |s| allocator.free(s),
+                else => {},
+            }
         }
         allocator.free(result);
     }
     for (args, 0..) |arg, i| {
+        const val = switch (arg.value) {
+            .string => |s| llm.types.Argument.Value{ .string = try allocator.dupe(u8, s) },
+            .integer => |v| llm.types.Argument.Value{ .integer = v },
+            .float => |v| llm.types.Argument.Value{ .float = v },
+            .boolean => |v| llm.types.Argument.Value{ .boolean = v },
+        };
         result[i] = .{
             .name = try allocator.dupe(u8, arg.name),
-            .value = try allocator.dupe(u8, arg.value),
+            .value = val,
         };
     }
     return result;
@@ -482,7 +491,7 @@ test toStepStartPayload {
 
 test toDelta {
     const arguments = &[_]llm.types.Argument{
-        .{ .name = "arg1", .value = "val1" },
+        .{ .name = "arg1", .value = .{ .string = "val1" } },
     };
     const arg_delta = api.InteractionStepDelta{
         .arguments_delta = .{ .arguments = "foo" },
@@ -511,33 +520,36 @@ test toDelta {
 test toArguments {
     const allocator = std.testing.allocator;
     const args = &[_]api.FunctionArgument{
-        .{ .name = "param", .value = "value" },
+        .{ .name = "param", .value = .{ .string = "value" } },
     };
 
     const generic_args = try toArguments(allocator, args);
     defer allocator.free(generic_args);
     try std.testing.expectEqual(1, generic_args.len);
     try std.testing.expectEqualStrings("param", generic_args[0].name);
-    try std.testing.expectEqualStrings("value", generic_args[0].value);
+    try std.testing.expectEqualStrings("value", generic_args[0].value.string);
 }
 
 test dupeArguments {
     const allocator = std.testing.allocator;
     const args = &[_]api.FunctionArgument{
-        .{ .name = "param", .value = "value" },
+        .{ .name = "param", .value = .{ .string = "value" } },
     };
 
     const generic_duped = try dupeArguments(allocator, args);
     defer {
         for (generic_duped) |arg| {
             allocator.free(arg.name);
-            allocator.free(arg.value);
+            switch (arg.value) {
+                .string => |s| allocator.free(s),
+                else => {},
+            }
         }
         allocator.free(generic_duped);
     }
     try std.testing.expectEqual(1, generic_duped.len);
     try std.testing.expectEqualStrings("param", generic_duped[0].name);
-    try std.testing.expectEqualStrings("value", generic_duped[0].value);
+    try std.testing.expectEqualStrings("value", generic_duped[0].value.string);
 }
 
 test toModels {
@@ -591,14 +603,14 @@ test "toGoogleStep OOM" {
 
 test "toArguments OOM" {
     const args = &[_]api.FunctionArgument{
-        .{ .name = "param", .value = "val" },
+        .{ .name = "param", .value = .{ .string = "val" } },
     };
     try std.testing.expectError(error.OutOfMemory, toArguments(std.testing.failing_allocator, args));
 }
 
 test "dupeArguments OOM" {
     const args = &[_]api.FunctionArgument{
-        .{ .name = "param", .value = "val" },
+        .{ .name = "param", .value = .{ .string = "val" } },
     };
     try std.testing.expectError(error.OutOfMemory, dupeArguments(std.testing.failing_allocator, args));
 }
