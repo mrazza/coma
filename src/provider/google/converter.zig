@@ -230,8 +230,7 @@ pub fn dupeArguments(allocator: Allocator, args: []const api.FunctionArgument) !
             .name = name,
             .value = val,
         };
-
-        initialized += 1;
+        initialized = i + 1;
     }
     return result;
 }
