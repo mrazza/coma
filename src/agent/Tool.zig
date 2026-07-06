@@ -7,10 +7,13 @@ const ToolResult = llm.types.ToolResult;
 
 /// Errors that can occur when executing or calling a tool.
 pub const CallError = error{
-    /// The number of arguments provided does not match the expected count.
-    ArgumentCountMismatch,
+    /// A required argument was not provided.
+    RequiredArgumentMissing,
     /// An argument was provided with a type that does not match the expected type.
     ArgumentTypeMismatch,
+    /// An argument was provided with a name that does not match the expected name;
+    /// either an unexpected name or the order does not match.
+    ArgumentMismatch,
 } || std.mem.Allocator.Error;
 
 const Tool = @This();
@@ -23,7 +26,8 @@ execute_fn: ToolExecuteFn,
 ///
 /// `allocator` is used to allocate memory for the result.
 /// `id` is the identifier of the tool call.
-/// `args` is the list of arguments to pass to the tool function.
+/// `args` is the list of arguments to pass to the tool function. All required arguments must be present.
+/// Order is not relevant. Unexpected arguments are ignored.
 ///
 /// Returns a `ToolResult` containing the result of the tool call. The caller is responsible
 /// for freeing the memory in the result's `result` field.
@@ -51,13 +55,23 @@ pub fn execute(self: *const Tool, allocator: Allocator, id: []const u8, args: []
 /// be passed to the LLM as the result of the tool call. The caller will own the result
 /// and be responsible for freeing it.
 pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
-    const res = comptime makeExecuteFn(descriptor, execute_fn);
-    return .{
-        .descriptor = descriptor,
-        .execute_fn = switch (res) {
-            .ok => |f| f,
-            .err => |e| @compileError(e.msg),
-        },
+    return comptime blk: {
+        for (descriptor.parameters, 0..) |p1, i| {
+            for (descriptor.parameters, 0..) |p2, j| {
+                if (i != j and std.mem.eql(u8, p1.name, p2.name)) {
+                    @compileError("Duplicate parameter name: " ++ p1.name);
+                }
+            }
+        }
+
+        const res = makeExecuteFn(descriptor, execute_fn);
+        break :blk Tool{
+            .descriptor = descriptor,
+            .execute_fn = switch (res) {
+                .ok => |f| f,
+                .err => |e| @compileError(e.msg),
+            },
+        };
     };
 }
 
@@ -77,23 +91,45 @@ const ValidationResult = union(enum) {
     },
 };
 
-fn expectedTagForType(comptime T: type) ValidationError!std.meta.Tag(Argument.Value) {
-    if (@typeInfo(T) == .int) return .integer;
-    if (@typeInfo(T) == .float) return .float;
-    if (T == []const u8) return .string;
-    if (T == bool) return .boolean;
-    return error.UnsupportedType;
+fn expectedTagForType(comptime T: type) ValidationError!struct { tag: std.meta.Tag(Argument.Value), required: bool } {
+    var InputT = T;
+    var is_optional = false;
+    var tag: std.meta.Tag(Argument.Value) = undefined;
+
+    if (@typeInfo(InputT) == .optional) {
+        is_optional = true;
+        InputT = @typeInfo(InputT).optional.child;
+    }
+
+    if (InputT == i64) {
+        tag = .integer;
+    } else if (InputT == f64) {
+        tag = .float;
+    } else if (InputT == []const u8) {
+        tag = .string;
+    } else if (InputT == bool) {
+        tag = .boolean;
+    } else {
+        return ValidationError.UnsupportedType;
+    }
+    return .{ .tag = tag, .required = !is_optional };
 }
 
 fn ExpectedTypeForParam(comptime param: llm.types.Tool.Param) ValidationError!type {
-    return switch (param.type) {
+    const ExpectedType = switch (param.type) {
         .string => []const u8,
         .enumeration => []const u8,
         .integer => i64,
         .float => f64,
         .boolean => bool,
-        .array => error.UnsupportedType,
+        .array => return error.UnsupportedType,
     };
+
+    if (!param.required) {
+        return ?ExpectedType;
+    }
+
+    return ExpectedType;
 }
 
 fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) ValidationResult {
@@ -145,41 +181,41 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         break :blk result_types;
     };
 
-    const non_allocator_count = comptime blk: {
-        var count = 0;
-        for (types) |T| {
-            if (T != Allocator) {
-                count += 1;
-            }
-        }
-        break :blk count;
-    };
-
     const TupleType = @Tuple(&types);
     return .{
         .ok = struct {
-            pub fn call(allocator: Allocator, slice: []const Argument) CallError![]const u8 {
-                if (slice.len != non_allocator_count) {
-                    return CallError.ArgumentCountMismatch;
-                }
+            pub fn call(allocator: Allocator, input_args: []const Argument) CallError![]const u8 {
+                var argument_map: std.StringHashMap(*const Argument) = .init(allocator);
+                defer argument_map.deinit();
+                for (input_args) |*arg| try argument_map.put(arg.name, arg);
 
                 var args: TupleType = undefined;
-                var slice_idx: usize = 0;
+                var descriptor_idx: usize = 0;
                 inline for (0..fn_info.params.len) |func_idx| {
                     const T = types[func_idx];
                     if (T == Allocator) {
                         args[func_idx] = allocator;
                     } else {
-                        const argument_value = slice[slice_idx].value;
-                        const expected_tag = comptime try expectedTagForType(T);
-                        if (argument_value != expected_tag) return CallError.ArgumentTypeMismatch;
-                        args[func_idx] = switch (expected_tag) {
-                            .integer => @intCast(argument_value.integer),
-                            .float => argument_value.float,
-                            .string => argument_value.string,
-                            .boolean => argument_value.boolean,
-                        };
-                        slice_idx += 1;
+                        const curr_descriptor = descriptor.parameters[descriptor_idx];
+                        descriptor_idx += 1;
+                        const opt_argument = argument_map.get(curr_descriptor.name);
+                        if (opt_argument) |argument| {
+                            const expected_tag = comptime try expectedTagForType(T);
+                            if (argument.value != expected_tag.tag) {
+                                std.debug.print("expected {}, actual {} [descriptor {s}]\n", .{ expected_tag.tag, argument.value, curr_descriptor.name });
+                                return CallError.ArgumentTypeMismatch;
+                            }
+                            args[func_idx] = switch (expected_tag.tag) {
+                                .integer => @intCast(argument.value.integer),
+                                .float => argument.value.float,
+                                .string => argument.value.string,
+                                .boolean => argument.value.boolean,
+                            };
+                        } else {
+                            if (curr_descriptor.required) return CallError.RequiredArgumentMissing;
+                            if (@typeInfo(@TypeOf(args[func_idx])) != .optional) unreachable;
+                            args[func_idx] = null;
+                        }
                     }
                 }
 
@@ -228,116 +264,6 @@ test init {
     try std.testing.expectEqualStrings("example_function", result.tool_name);
     try std.testing.expectEqualStrings("123", result.id);
     try std.testing.expectEqualStrings("12hello", result.result);
-}
-
-test "init - no Allocator parameter" {
-    const allocator = std.testing.allocator;
-
-    const tool_descriptor: llm.types.Tool = .{
-        .name = "no_allocator_func",
-        .description = "Takes two arguments, no allocator in parameter signature",
-        .parameters = &.{
-            .{
-                .name = "arg1",
-                .description = "The first argument",
-                .type = .string,
-                .required = true,
-            },
-        },
-    };
-    const tool_impl = struct {
-        pub fn no_allocator_func(arg1: []const u8) ![]const u8 {
-            return allocator.dupe(u8, arg1);
-        }
-    };
-    const tool = comptime init(tool_descriptor, tool_impl.no_allocator_func);
-
-    const args = [_]Argument{
-        .{ .name = "arg1", .value = .{ .string = "hello" } },
-    };
-
-    const result = try tool.execute(allocator, "abc", &args);
-    defer allocator.free(result.result);
-
-    try std.testing.expectEqualStrings("no_allocator_func", result.tool_name);
-    try std.testing.expectEqualStrings("abc", result.id);
-    try std.testing.expectEqualStrings("hello", result.result);
-}
-
-test "init - Allocator as middle/last parameter" {
-    const allocator = std.testing.allocator;
-
-    const tool_descriptor: llm.types.Tool = .{
-        .name = "middle_last_allocator_func",
-        .description = "Takes three arguments, allocator is at the middle/end",
-        .parameters = &.{
-            .{
-                .name = "arg1",
-                .description = "The first argument",
-                .type = .integer,
-                .required = true,
-            },
-            .{
-                .name = "arg2",
-                .description = "The second argument",
-                .type = .string,
-                .required = true,
-            },
-        },
-    };
-    const tool_impl = struct {
-        pub fn middle_last_allocator_func(arg1: i64, tool_allocator: Allocator, arg2: []const u8) ![]const u8 {
-            return try std.fmt.allocPrint(tool_allocator, "middle-{d}-{s}", .{ arg1, arg2 });
-        }
-    };
-    const tool = comptime init(tool_descriptor, tool_impl.middle_last_allocator_func);
-
-    const args = [_]Argument{
-        .{ .name = "arg1", .value = .{ .integer = 99 } },
-        .{ .name = "arg2", .value = .{ .string = "test" } },
-    };
-
-    const result = try tool.execute(allocator, "xyz", &args);
-    defer allocator.free(result.result);
-
-    try std.testing.expectEqualStrings("middle_last_allocator_func", result.tool_name);
-    try std.testing.expectEqualStrings("xyz", result.id);
-    try std.testing.expectEqualStrings("middle-99-test", result.result);
-}
-
-test "init - multiple Allocator parameters" {
-    const allocator = std.testing.allocator;
-
-    const tool_descriptor: llm.types.Tool = .{
-        .name = "multi_allocator_func",
-        .description = "Takes multiple allocator arguments",
-        .parameters = &.{
-            .{
-                .name = "arg1",
-                .description = "The first argument",
-                .type = .integer,
-                .required = true,
-            },
-        },
-    };
-    const tool_impl = struct {
-        pub fn multi_allocator_func(alloc1: Allocator, arg1: i64, alloc2: Allocator) ![]const u8 {
-            if (alloc1.ptr != alloc2.ptr) return error.OutOfMemory;
-            return try std.fmt.allocPrint(alloc1, "multi-{d}", .{arg1});
-        }
-    };
-    const tool = comptime init(tool_descriptor, tool_impl.multi_allocator_func);
-
-    const args = [_]Argument{
-        .{ .name = "arg1", .value = .{ .integer = 7 } },
-    };
-
-    const result = try tool.execute(allocator, "multi", &args);
-    defer allocator.free(result.result);
-
-    try std.testing.expectEqualStrings("multi_allocator_func", result.tool_name);
-    try std.testing.expectEqualStrings("multi", result.id);
-    try std.testing.expectEqualStrings("multi-7", result.result);
 }
 
 test "makeExecuteFn - ExpectedFunctionOrPointer" {
@@ -459,4 +385,365 @@ test "makeExecuteFn - ReturnTypeMismatch" {
     const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expectEqual(ValidationError.ReturnTypeMismatch, res.err.code);
     try std.testing.expectEqualStrings("Function return type must be a string.", res.err.msg);
+}
+
+test "makeExecuteFn - argument optionals OK" {
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = false,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(optional: ?[]const u8) ![]const u8 {
+            if (optional) |val| return val;
+            return "";
+        }
+    };
+    const res = comptime makeExecuteFn(desc, Impl.run);
+    try std.testing.expect(res == .ok);
+}
+
+test "makeExecuteFn - argument optional in descriptor, required in fn" {
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = false,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(required: []const u8) ![]const u8 {
+            return required;
+        }
+    };
+    const res = comptime makeExecuteFn(desc, Impl.run);
+    try std.testing.expectEqual(ValidationError.ArgumentTypeMismatch, res.err.code);
+    try std.testing.expectEqualStrings("Argument type mismatch in tool test_tool for argument arg1: expected ?[]const u8 but got []const u8", res.err.msg);
+}
+
+test "makeExecuteFn - argument required in descriptor, optional in fn" {
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(optional: ?[]const u8) ![]const u8 {
+            if (optional) |val| return val;
+            return "";
+        }
+    };
+    const res = comptime makeExecuteFn(desc, Impl.run);
+    try std.testing.expectEqual(ValidationError.ArgumentTypeMismatch, res.err.code);
+    try std.testing.expectEqualStrings("Argument type mismatch in tool test_tool for argument arg1: expected []const u8 but got ?[]const u8", res.err.msg);
+}
+
+test execute {
+    const testing_allocator = std.testing.allocator;
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(allocator: Allocator, arg1: []const u8) ![]const u8 {
+            return try allocator.dupe(u8, arg1);
+        }
+    };
+    const tool = Tool.init(desc, Impl.run);
+    const args: []const Argument = &.{
+        .{
+            .name = "arg1",
+            .value = .{ .string = "value" },
+        },
+    };
+    const result = try tool.execute(testing_allocator, "id", args);
+    defer testing_allocator.free(result.result);
+
+    try std.testing.expectEqualStrings("test_tool", result.tool_name);
+    try std.testing.expectEqualStrings("id", result.id);
+    try std.testing.expectEqualStrings("value", result.result);
+}
+
+test "execute - unknown argument" {
+    const testing_allocator = std.testing.allocator;
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(allocator: Allocator, arg1: []const u8) ![]const u8 {
+            return try allocator.dupe(u8, arg1);
+        }
+    };
+    const tool = Tool.init(desc, Impl.run);
+    const args: []const Argument = &.{
+        .{
+            .name = "unknown",
+            .value = .{ .string = "value" },
+        },
+    };
+    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, "id", args));
+}
+
+test "execute - extra argument ignored" {
+    const testing_allocator = std.testing.allocator;
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(allocator: Allocator, arg1: []const u8) ![]const u8 {
+            return try allocator.dupe(u8, arg1);
+        }
+    };
+    const tool = Tool.init(desc, Impl.run);
+    const args: []const Argument = &.{
+        .{
+            .name = "arg1",
+            .value = .{ .string = "value1" },
+        },
+        .{
+            .name = "arg2",
+            .value = .{ .string = "value2" },
+        },
+    };
+    const result = try tool.execute(testing_allocator, "id", args);
+    defer testing_allocator.free(result.result);
+    try std.testing.expectEqualStrings("value1", result.result);
+}
+
+test "execute - missing required argument" {
+    const testing_allocator = std.testing.allocator;
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(allocator: Allocator, arg1: []const u8) ![]const u8 {
+            return try allocator.dupe(u8, arg1);
+        }
+    };
+    const tool = Tool.init(desc, Impl.run);
+    const args: []const Argument = &.{};
+    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, "id", args));
+}
+
+test "execute - missing optional argument" {
+    const testing_allocator = std.testing.allocator;
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = false,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(allocator: Allocator, arg1: ?[]const u8) ![]const u8 {
+            if (arg1 != null) return allocator.dupe(u8, arg1.?);
+            return allocator.dupe(u8, "default");
+        }
+    };
+    const tool = Tool.init(desc, Impl.run);
+    const args: []const Argument = &.{};
+    const result = try tool.execute(testing_allocator, "id", args);
+    defer testing_allocator.free(result.result);
+
+    try std.testing.expectEqualStrings("test_tool", result.tool_name);
+    try std.testing.expectEqualStrings("id", result.id);
+    try std.testing.expectEqualStrings("default", result.result);
+}
+
+test "execute - argument type mismatch" {
+    const testing_allocator = std.testing.allocator;
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(allocator: Allocator, arg1: []const u8) ![]const u8 {
+            return try allocator.dupe(u8, arg1);
+        }
+    };
+    const tool = Tool.init(desc, Impl.run);
+    const args: []const Argument = &.{
+        .{
+            .name = "arg1",
+            .value = .{ .integer = 10 },
+        },
+    };
+    try std.testing.expectError(CallError.ArgumentTypeMismatch, tool.execute(testing_allocator, "id", args));
+}
+
+test "execute - no Allocator parameter" {
+    const allocator = std.testing.allocator;
+
+    const tool_descriptor: llm.types.Tool = .{
+        .name = "no_allocator_func",
+        .description = "Takes two arguments, no allocator in parameter signature",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "The first argument",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const tool_impl = struct {
+        pub fn no_allocator_func(arg1: []const u8) ![]const u8 {
+            return allocator.dupe(u8, arg1);
+        }
+    };
+    const tool = comptime init(tool_descriptor, tool_impl.no_allocator_func);
+
+    const args = [_]Argument{
+        .{ .name = "arg1", .value = .{ .string = "hello" } },
+    };
+
+    const result = try tool.execute(allocator, "abc", &args);
+    defer allocator.free(result.result);
+
+    try std.testing.expectEqualStrings("no_allocator_func", result.tool_name);
+    try std.testing.expectEqualStrings("abc", result.id);
+    try std.testing.expectEqualStrings("hello", result.result);
+}
+
+test "execute - Allocator as middle/last parameter" {
+    const allocator = std.testing.allocator;
+
+    const tool_descriptor: llm.types.Tool = .{
+        .name = "middle_last_allocator_func",
+        .description = "Takes three arguments, allocator is at the middle/end",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "The first argument",
+                .type = .integer,
+                .required = true,
+            },
+            .{
+                .name = "arg2",
+                .description = "The second argument",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const tool_impl = struct {
+        pub fn middle_last_allocator_func(arg1: i64, tool_allocator: Allocator, arg2: []const u8) ![]const u8 {
+            return try std.fmt.allocPrint(tool_allocator, "middle-{d}-{s}", .{ arg1, arg2 });
+        }
+    };
+    const tool = comptime init(tool_descriptor, tool_impl.middle_last_allocator_func);
+
+    const args = [_]Argument{
+        .{ .name = "arg1", .value = .{ .integer = 99 } },
+        .{ .name = "arg2", .value = .{ .string = "test" } },
+    };
+
+    const result = try tool.execute(allocator, "xyz", &args);
+    defer allocator.free(result.result);
+
+    try std.testing.expectEqualStrings("middle_last_allocator_func", result.tool_name);
+    try std.testing.expectEqualStrings("xyz", result.id);
+    try std.testing.expectEqualStrings("middle-99-test", result.result);
+}
+
+test "execute - multiple Allocator parameters" {
+    const allocator = std.testing.allocator;
+
+    const tool_descriptor: llm.types.Tool = .{
+        .name = "multi_allocator_func",
+        .description = "Takes multiple allocator arguments",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "The first argument",
+                .type = .integer,
+                .required = true,
+            },
+        },
+    };
+    const tool_impl = struct {
+        pub fn multi_allocator_func(alloc1: Allocator, arg1: i64, alloc2: Allocator) ![]const u8 {
+            if (alloc1.ptr != alloc2.ptr) return error.OutOfMemory;
+            return try std.fmt.allocPrint(alloc1, "multi-{d}", .{arg1});
+        }
+    };
+    const tool = comptime init(tool_descriptor, tool_impl.multi_allocator_func);
+
+    const args = [_]Argument{
+        .{ .name = "arg1", .value = .{ .integer = 7 } },
+    };
+
+    const result = try tool.execute(allocator, "multi", &args);
+    defer allocator.free(result.result);
+
+    try std.testing.expectEqualStrings("multi_allocator_func", result.tool_name);
+    try std.testing.expectEqualStrings("multi", result.id);
+    try std.testing.expectEqualStrings("multi-7", result.result);
 }
