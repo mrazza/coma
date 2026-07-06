@@ -50,6 +50,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "llm", .module = llm },
             .{ .name = "provider", .module = provider },
         },
     });
