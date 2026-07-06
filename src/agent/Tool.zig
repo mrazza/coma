@@ -5,7 +5,13 @@ const Allocator = std.mem.Allocator;
 const Argument = llm.types.Argument;
 const ToolResult = llm.types.ToolResult;
 
-pub const CallError = error{ ArgumentCountMismatch, ArgumentTypeMismatch } || std.mem.Allocator.Error;
+/// Errors that can occur when executing or calling a tool.
+pub const CallError = error{
+    /// The number of arguments provided does not match the expected count.
+    ArgumentCountMismatch,
+    /// An argument was provided with a type that does not match the expected type.
+    ArgumentTypeMismatch,
+} || std.mem.Allocator.Error;
 
 const Tool = @This();
 const ToolExecuteFn = *const fn (allocator: Allocator, args: []const Argument) CallError![]const u8;
@@ -37,9 +43,13 @@ pub fn execute(self: *const Tool, allocator: Allocator, id: []const u8, args: []
 /// `execute_fn` is the function to be called when the tool is executed.
 ///
 /// The function arguments must match the descriptor parameters and be in the same order.
-/// The function can, optionally, have an allocator as an argument as well in any position
+/// The function also takes an allocator as an argument. The allocator can be in any position
 /// provided the other arguments are still in the same order as the parameters in the
 /// descriptor.
+///
+/// The `execute_fn` should return the result of the tool call as a string. The result will
+/// be passed to the LLM as the result of the tool call. The caller will own the result
+/// and be responsible for freeing it.
 pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
     const res = comptime makeExecuteFn(descriptor, execute_fn);
     return .{
@@ -56,6 +66,7 @@ const ValidationError = error{
     ExpectedFunctionOrPointer,
     ArgumentTypeMismatch,
     ArgumentCountMismatch,
+    ReturnTypeMismatch,
 };
 
 const ValidationResult = union(enum) {
@@ -91,10 +102,17 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         .@"fn" => |info| info,
         .pointer => |ptr_info| switch (@typeInfo(ptr_info.child)) {
             .@"fn" => |info| info,
-            else => return .{ .err = .{ .code = error.ExpectedFunctionOrPointer, .msg = "Expected function or function pointer" } },
+            else => return .{ .err = .{ .code = ValidationError.ExpectedFunctionOrPointer, .msg = "Expected function or function pointer" } },
         },
-        else => return .{ .err = .{ .code = error.ExpectedFunctionOrPointer, .msg = "Expected function or function pointer" } },
+        else => return .{ .err = .{ .code = ValidationError.ExpectedFunctionOrPointer, .msg = "Expected function or function pointer" } },
     };
+
+    const return_type = fn_info.return_type.?;
+    const payload_type = switch (@typeInfo(return_type)) {
+        .error_union => |err_union| err_union.payload,
+        else => return_type,
+    };
+    if (payload_type != []const u8) return .{ .err = .{ .code = ValidationError.ReturnTypeMismatch, .msg = "Function return type must be a string." } };
 
     const types = comptime blk: {
         var param_idx: usize = 0;
@@ -229,7 +247,7 @@ test "init - no Allocator parameter" {
     };
     const tool_impl = struct {
         pub fn no_allocator_func(arg1: []const u8) ![]const u8 {
-            return arg1;
+            return allocator.dupe(u8, arg1);
         }
     };
     const tool = comptime init(tool_descriptor, tool_impl.no_allocator_func);
@@ -239,6 +257,7 @@ test "init - no Allocator parameter" {
     };
 
     const result = try tool.execute(allocator, "abc", &args);
+    defer allocator.free(result.result);
 
     try std.testing.expectEqualStrings("no_allocator_func", result.tool_name);
     try std.testing.expectEqualStrings("abc", result.id);
@@ -416,4 +435,28 @@ test "makeExecuteFn - ParamTypeArrayNotSupported" {
     const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expectEqual(ValidationError.UnsupportedType, res.err.code);
     try std.testing.expectEqualStrings("Failed to resolve type from descriptor (tool: test_tool, param: arg1)", res.err.msg);
+}
+
+test "makeExecuteFn - ReturnTypeMismatch" {
+    const array_inner_type: llm.types.Tool.Param.Type = .integer;
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .{ .array = &array_inner_type },
+                .required = true,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(_: []const u8) !i32 {
+            return 10;
+        }
+    };
+    const res = comptime makeExecuteFn(desc, Impl.run);
+    try std.testing.expectEqual(ValidationError.ReturnTypeMismatch, res.err.code);
+    try std.testing.expectEqualStrings("Function return type must be a string.", res.err.msg);
 }
