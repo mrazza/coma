@@ -465,12 +465,11 @@ test toGoogleStep {
     try std.testing.expectEqualStrings("Hello, world!", google_prompt.user_input.content[0].text.?);
     try std.testing.expect(google_prompt.user_input.content[0].type == api.Content.Type.text);
 
+    var tool_result = try llm.types.ToolResult.init(allocator, "test_tool", "call_123", "success");
+    defer tool_result.deinit();
+
     const tool_step = llm.types.Step{
-        .tool_result = .{
-            .tool_name = "test_tool",
-            .id = "call_123",
-            .result = "success",
-        },
+        .tool_result = tool_result,
     };
     const google_tool = try toGoogleStep(arena_allocator, tool_step);
     try std.testing.expectEqualStrings("test_tool", google_tool.function_result.name);

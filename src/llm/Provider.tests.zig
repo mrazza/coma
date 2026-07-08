@@ -31,23 +31,18 @@ test "Provider.executeStep delegates to VTable" {
         .{ .prompt = "hello" },
     };
 
-    const prev_result = llm.types.StepResult{
-        .model_output = &.{},
-        .thoughts = &.{},
-        .tool_calls = &.{},
-        .ptr = &mock_impl,
-        .vtable = &testing.MockProvider.mock_step_vtable,
-    };
+    var mock_step_continuation: testing.MockProvider.MockStepContinuation = .{};
+    const last_step_continuation = mock_step_continuation.stepContinuation();
 
-    var result = try prov.executeStep(allocator, session_config, input_steps, prev_result);
+    var result, var continuation = try prov.executeStep(allocator, session_config, input_steps, last_step_continuation);
     defer result.deinit();
+    defer continuation.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_calls);
     try std.testing.expectEqual(allocator, mock_impl.last_allocator.?);
     try std.testing.expectEqualStrings("test-model-id", mock_impl.last_session_config.?.model.id);
     try std.testing.expectEqualStrings("hello", mock_impl.last_input.?[0].prompt);
-    try std.testing.expectEqual(prev_result.vtable, mock_impl.last_previous_step.?.vtable);
-    try std.testing.expectEqual(prev_result.ptr, mock_impl.last_previous_step.?.ptr);
+    try std.testing.expectEqual(last_step_continuation.ptr, mock_impl.last_previous_step.?.ptr);
 }
 
 test "Provider.deinit delegates to VTable" {
@@ -109,10 +104,15 @@ test "Provider.executeStep returns custom success and error" {
             .ptr = &mock_impl,
             .vtable = &testing.MockProvider.mock_step_vtable,
         };
+        mock_impl.execute_step_continuation = llm.types.StepContinuation{
+            .ptr = &mock_impl,
+            .vtable = &testing.MockProvider.mock_continuation_vtable,
+        };
 
         var prov = mock_impl.provider();
-        var result = try prov.executeStep(allocator, session_config, &.{}, null);
+        var result, var continuation = try prov.executeStep(allocator, session_config, &.{}, null);
         defer result.deinit();
+        defer continuation.deinit();
 
         try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_calls);
         try std.testing.expectEqualStrings("custom-output", result.model_output[0].text);
@@ -145,13 +145,8 @@ test "Provider.executeStepStreaming delegates to VTable" {
         .{ .prompt = "hello" },
     };
 
-    const prev_result = llm.types.StepResult{
-        .model_output = &.{},
-        .thoughts = &.{},
-        .tool_calls = &.{},
-        .ptr = &mock_impl,
-        .vtable = &testing.MockProvider.mock_step_vtable,
-    };
+    var mock_continuation: testing.MockProvider.MockStepContinuation = .{};
+    const prev_continuation = mock_continuation.stepContinuation();
 
     const CallbackState = struct {
         fn callback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
@@ -160,16 +155,16 @@ test "Provider.executeStepStreaming delegates to VTable" {
         }
     };
 
-    var result = try prov.executeStepStreaming(allocator, session_config, input_steps, prev_result, CallbackState.callback, null);
+    var result, var continuation = try prov.executeStepStreaming(allocator, session_config, input_steps, prev_continuation, CallbackState.callback, null);
     defer result.deinit();
+    defer continuation.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_streaming_calls);
     try std.testing.expectEqual(@as(usize, 0), mock_impl.execute_step_calls);
     try std.testing.expectEqual(allocator, mock_impl.last_allocator.?);
     try std.testing.expectEqualStrings("test-model-id", mock_impl.last_session_config.?.model.id);
     try std.testing.expectEqualStrings("hello", mock_impl.last_input.?[0].prompt);
-    try std.testing.expectEqual(prev_result.vtable, mock_impl.last_previous_step.?.vtable);
-    try std.testing.expectEqual(prev_result.ptr, mock_impl.last_previous_step.?.ptr);
+    try std.testing.expectEqual(prev_continuation.ptr, mock_impl.last_previous_step.?.ptr);
 }
 
 test "Provider.executeStepStreaming returns custom success and error" {
@@ -197,10 +192,15 @@ test "Provider.executeStepStreaming returns custom success and error" {
             .ptr = &mock_impl,
             .vtable = &testing.MockProvider.mock_step_vtable,
         };
+        mock_impl.execute_step_continuation = llm.types.StepContinuation{
+            .ptr = &mock_impl,
+            .vtable = &testing.MockProvider.mock_continuation_vtable,
+        };
 
         var prov = mock_impl.provider();
-        var result = try prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null);
+        var result, var continuation = try prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null);
         defer result.deinit();
+        defer continuation.deinit();
 
         try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_streaming_calls);
         try std.testing.expectEqualStrings("custom-output", result.model_output[0].text);
@@ -215,4 +215,3 @@ test "Provider.executeStepStreaming returns custom success and error" {
         try std.testing.expectError(error.HttpRequestFailed, prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null));
     }
 }
-

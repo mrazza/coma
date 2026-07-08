@@ -1,6 +1,10 @@
 const std = @import("std");
 const provider = @import("provider");
 const llm = @import("llm");
+const agent_pkg = @import("agent");
+const Agent = agent_pkg.Agent;
+const Tool = agent_pkg.Tool;
+const types = agent_pkg.types;
 
 const coma = @import("coma");
 
@@ -213,12 +217,55 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
     return error.ApiKeyMissing;
 }
 
+// TODO(razza): Get rid of global IO and make it an optional argument (like Allocator) to tools.
+threadlocal var global_io: std.Io = undefined;
+
+fn executeTypescript(allocator: std.mem.Allocator, code: []const u8) ![]const u8 {
+    std.debug.print("\n{s}Executing TypeScript code...{s}\n", .{ color_yellow, color_reset });
+    std.debug.print("{s}--- CODE ---{s}\n{s}\n{s}------------{s}\n", .{ color_gray, color_reset, code, color_gray, color_reset });
+
+    const argv = [_][]const u8{
+        "npx", "tsx", "-e", code,
+    };
+    const result = std.process.run(allocator, global_io, .{
+        .argv = &argv,
+    }) catch |err| {
+        return try std.fmt.allocPrint(allocator, "Error executing script: {}", .{err});
+    };
+    errdefer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+    allocator.free(result.stderr);
+
+    if (result.term != .exited) {
+        allocator.free(result.stdout);
+        return try allocator.dupe(u8, "Error: process did not exit cleanly");
+    }
+
+    std.debug.print("{s}Output:{s}\n{s}", .{ color_green, color_reset, result.stdout });
+    return result.stdout;
+}
+
+fn getWeather(allocator: std.mem.Allocator, zip_code: i64) ![]const u8 {
+    std.debug.print("\n{s}Executing get_weather for zip code {}...{s}\n", .{ color_yellow, zip_code, color_reset });
+
+    const result_str = if (zip_code == 7302)
+        try allocator.dupe(u8, "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph")
+    else
+        try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip_code});
+
+    std.debug.print("{s}Output:{s}\n{s}\n", .{ color_green, color_reset, result_str });
+    return result_str;
+}
+
 /// The main entry point of the application.
 /// Currently used for testing.
 pub fn main(init: std.process.Init) !void {
     // 1. Initialize an allocator for memory management
     var allocator = init.gpa;
     const io = init.io;
+    global_io = io;
 
     const api_key = loadApiKey(allocator, io, init.environ_map) catch |err| {
         if (err == error.ApiKeyMissing) {
@@ -245,35 +292,52 @@ pub fn main(init: std.process.Init) !void {
         }
     } else unreachable;
 
-    const session_config: llm.types.SessionConfig = .{
-        .model = selected_model.?,
-        .tools = &.{
+    const execute_typescript_desc = llm.types.Tool{
+        .name = "execute_typescript",
+        .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
+        .parameters = &.{
             .{
-                .name = "execute_typescript",
-                .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
-                .parameters = &.{
-                    .{
-                        .name = "code",
-                        .type = .string,
-                        .required = true,
-                        .description = "The typescript code to execute.",
-                    },
-                },
-            },
-            .{
-                .name = "get_weather",
-                .description = "Get the current weather for a given zip code.",
-                .parameters = &.{
-                    .{
-                        .name = "zip_code",
-                        .type = .integer,
-                        .required = true,
-                        .description = "The 5-digit zip code to get the weather for.",
-                    },
-                },
+                .name = "code",
+                .type = .string,
+                .required = true,
+                .description = "The typescript code to execute.",
             },
         },
     };
+
+    const get_weather_desc = llm.types.Tool{
+        .name = "get_weather",
+        .description = "Get the current weather for a given zip code.",
+        .parameters = &.{
+            .{
+                .name = "zip_code",
+                .type = .integer,
+                .required = true,
+                .description = "The 5-digit zip code to get the weather for.",
+            },
+        },
+    };
+
+    const tools = &[_]Tool{
+        Tool.init(execute_typescript_desc, executeTypescript),
+        Tool.init(get_weather_desc, getWeather),
+    };
+
+    const session_config: llm.types.SessionConfig = .{
+        .model = selected_model.?,
+        .tools = &.{
+            tools[0].descriptor,
+            tools[1].descriptor,
+        },
+    };
+
+    var agent = Agent{
+        .provider = client,
+        .tools = tools,
+        .session_config = session_config,
+        .last_step = null,
+    };
+    defer agent.deinit();
 
     std.debug.print(
         \\{s}============================================================================
@@ -289,90 +353,33 @@ pub fn main(init: std.process.Init) !void {
     var stdin_buffer: [1024]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
 
-    // 2. Read until the user hits Enter ('\n')
-    // This returns a slice of the buffer containing the raw string
-    var last_step: ?llm.types.StepResult = null;
-    var last_tool_results: std.ArrayList(llm.types.ToolResult) = .empty;
-    defer last_tool_results.deinit(allocator);
     while (true) {
-        var new_steps: std.ArrayList(llm.types.Step) = .empty;
-        defer new_steps.deinit(allocator);
+        std.debug.print("\n{s}User > {s}", .{ color_green ++ color_bold, color_reset });
+        const user_input = try stdin_reader.interface.takeDelimiter('\n') orelse break;
+        if (user_input.len == 0) break;
 
-        if (last_step == null or last_step.?.tool_calls.len == 0) {
-            std.debug.print("\n{s}User > {s}", .{ color_green ++ color_bold, color_reset });
-            const user_input = try stdin_reader.interface.takeDelimiter('\n') orelse break;
-            if (user_input.len == 0) break;
-            try new_steps.append(allocator, .{ .prompt = user_input });
-        } else {
-            for (last_step.?.tool_calls) |tool_call| {
-                if (std.mem.eql(u8, tool_call.name, "execute_typescript")) {
-                    const code = tool_call.arguments[0].value.string;
-                    std.debug.print("\n{s}Executing TypeScript code...{s}\n", .{ color_yellow, color_reset });
-                    std.debug.print("{s}--- CODE ---{s}\n{s}\n{s}------------{s}\n", .{ color_gray, color_reset, code, color_gray, color_reset });
-                    const argv = [_][]const u8{
-                        "npx", "tsx", "-e", code,
-                    };
-                    const result = try std.process.run(allocator, io, .{
-                        .argv = &argv,
-                    });
+        const turn = types.Turn{ .prompt = user_input };
+        var result = agent.executeTurn(allocator, turn) catch |err| {
+            std.debug.print("Error during execution: {}\n", .{err});
+            continue;
+        };
+        defer result.deinit();
 
-                    if (result.term == .exited) {
-                        const tool_result: llm.types.ToolResult = .{
-                            .tool_name = tool_call.name,
-                            .id = tool_call.id,
-                            .result = result.stdout,
-                        };
-                        std.debug.print("{s}Output:{s}\n{s}", .{ color_green, color_reset, result.stdout });
-                        try last_tool_results.append(allocator, tool_result);
-                        try new_steps.append(allocator, .{ .tool_result = tool_result });
-                        allocator.free(result.stderr);
-                    }
-                } else if (std.mem.eql(u8, tool_call.name, "get_weather")) {
-                    const zip_val = tool_call.arguments[0].value;
-                    const zip = switch (zip_val) {
-                        .integer => |v| v,
-                        else => -1,
-                    };
-                    const result_str = if (zip == 7302)
-                        try allocator.dupe(u8, "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph")
-                    else
-                        try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip});
-
-                    std.debug.print("\n{s}Executing get_weather for zip code {}...{s}\n", .{ color_yellow, zip, color_reset });
-
-                    const tool_result: llm.types.ToolResult = .{
-                        .tool_name = tool_call.name,
-                        .id = tool_call.id,
-                        .result = result_str,
-                    };
-                    std.debug.print("{s}Output:{s}\n{s}\n", .{ color_green, color_reset, result_str });
-                    try last_tool_results.append(allocator, tool_result);
-                    try new_steps.append(allocator, .{ .tool_result = tool_result });
-                }
+        const last = result.final_step;
+        if (last.thoughts.len > 0) {
+            std.debug.print("{s}Thinking...{s}\n", .{ color_gray, color_reset });
+            for (last.thoughts) |thought| {
+                std.debug.print("{s}{s}", .{ color_gray, thought.text });
+            }
+            std.debug.print("{s}\n", .{color_reset});
+        }
+        for (last.model_output) |output| {
+            switch (output) {
+                .text => |text| {
+                    std.debug.print("\n{s}Agent >{s} {s}\n", .{ color_cyan ++ color_bold, color_reset, text });
+                },
             }
         }
-
-        var stream_ctx = StreamContext{ .allocator = allocator };
-        const step_result = try client.executeStepStreaming(allocator, session_config, new_steps.items, last_step, streamCallback, &stream_ctx);
-        errdefer step_result.deinit();
-
-        for (last_tool_results.items) |tool_call| {
-            allocator.free(tool_call.result);
-        }
-        last_tool_results.clearRetainingCapacity();
-
-        if (stream_ctx.current_type != null) {
-            std.debug.print("\n", .{});
-        }
-
-        if (last_step) |*last| {
-            last.deinit();
-        }
-        last_step = step_result;
-    }
-
-    if (last_step) |*last| {
-        last.deinit();
     }
 }
 
