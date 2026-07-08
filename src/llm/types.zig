@@ -143,6 +143,14 @@ pub const StepContinuation = struct {
     }
 };
 
+/// Represents the outcome of executing a single interaction step with the LLM.
+pub const StepOutcome = struct {
+    /// The result of the step execution containing generated outputs, thoughts, and tool calls.
+    result: StepResult,
+    /// The continuation required to maintain conversation state for subsequent steps.
+    continuation: StepContinuation,
+};
+
 /// Represents a single input step to the LLM.
 pub const Step = union(enum) {
     /// A user-provided text prompt.

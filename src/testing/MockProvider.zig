@@ -3,11 +3,13 @@ const Allocator = std.mem.Allocator;
 const llm = @import("llm");
 const Provider = llm.Provider;
 const types = llm.types;
+
 const ListModelsResult = types.ListModelsResult;
 const StepResult = types.StepResult;
 const StepContinuation = types.StepContinuation;
 const SessionConfig = types.SessionConfig;
 const Step = types.Step;
+const StepOutcome = types.StepOutcome;
 
 /// A mock implementation of the `llm.Provider` interface for testing.
 const MockProvider = @This();
@@ -95,7 +97,7 @@ fn execute_step(
     session_config: SessionConfig,
     input: []const Step,
     previous_step: ?StepContinuation,
-) Provider.ProviderError!struct { StepResult, StepContinuation } {
+) Provider.ProviderError!StepOutcome {
     const self: *MockProvider = @ptrCast(@alignCast(ptr));
     self.execute_step_calls += 1;
     self.last_allocator = allocator;
@@ -104,15 +106,18 @@ fn execute_step(
     self.last_previous_step = previous_step;
     if (self.execute_step_result) |res| {
         const ok = try res;
-        return .{ ok, self.execute_step_continuation.? };
+        return StepOutcome{ .result = ok, .continuation = self.execute_step_continuation.? };
     }
-    return .{ StepResult{
-        .model_output = &.{},
-        .thoughts = &.{},
-        .tool_calls = &.{},
-        .ptr = ptr,
-        .vtable = &mock_step_vtable,
-    }, StepContinuation{ .ptr = ptr, .vtable = &mock_continuation_vtable } };
+    return StepOutcome{
+        .result = StepResult{
+            .model_output = &.{},
+            .thoughts = &.{},
+            .tool_calls = &.{},
+            .ptr = ptr,
+            .vtable = &mock_step_vtable,
+        },
+        .continuation = StepContinuation{ .ptr = ptr, .vtable = &mock_continuation_vtable },
+    };
 }
 
 /// Mock implementation of `executeStepStreaming`.
@@ -124,7 +129,7 @@ fn execute_step_streaming(
     previous_step: ?StepContinuation,
     callback: types.StreamingCallback,
     callback_context: ?*anyopaque,
-) Provider.ProviderError!struct { StepResult, StepContinuation } {
+) Provider.ProviderError!StepOutcome {
     const self: *MockProvider = @ptrCast(@alignCast(ptr));
     _ = callback;
     _ = callback_context;
@@ -135,15 +140,18 @@ fn execute_step_streaming(
     self.last_previous_step = previous_step;
     if (self.execute_step_result) |res| {
         const ok = try res;
-        return .{ ok, self.execute_step_continuation.? };
+        return StepOutcome{ .result = ok, .continuation = self.execute_step_continuation.? };
     }
-    return .{ StepResult{
-        .model_output = &.{},
-        .thoughts = &.{},
-        .tool_calls = &.{},
-        .ptr = ptr,
-        .vtable = &mock_step_vtable,
-    }, StepContinuation{ .ptr = ptr, .vtable = &mock_continuation_vtable } };
+    return StepOutcome{
+        .result = StepResult{
+            .model_output = &.{},
+            .thoughts = &.{},
+            .tool_calls = &.{},
+            .ptr = ptr,
+            .vtable = &mock_step_vtable,
+        },
+        .continuation = StepContinuation{ .ptr = ptr, .vtable = &mock_continuation_vtable },
+    };
 }
 
 /// Mock implementation of `deinit`.
