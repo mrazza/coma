@@ -1,12 +1,13 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const types = @import("types.zig");
+
 const ListModelsResult = types.ListModelsResult;
-const StepResult = types.StepResult;
 const SessionConfig = types.SessionConfig;
 const Step = types.Step;
 const StreamingCallback = types.StreamingCallback;
 const StepContinuation = types.StepContinuation;
+const StepOutcome = types.StepOutcome;
 
 /// An interface for an LLM provider.
 const Provider = @This();
@@ -35,7 +36,7 @@ pub const VTable = struct {
         session_config: SessionConfig,
         input: []const Step,
         previous_step: ?StepContinuation,
-    ) ProviderError!struct { StepResult, StepContinuation },
+    ) ProviderError!types.StepOutcome,
 
     /// Executes a single interaction step with the LLM, streaming the response.
     execute_step_streaming: *const fn (
@@ -46,7 +47,7 @@ pub const VTable = struct {
         previous_step: ?StepContinuation,
         callback: types.StreamingCallback,
         callback_context: ?*anyopaque,
-    ) ProviderError!struct { StepResult, StepContinuation },
+    ) ProviderError!types.StepOutcome,
 
     /// Frees the resources associated with the provider.
     deinit: *const fn (ptr: *anyopaque) void,
@@ -62,25 +63,26 @@ pub fn listModels(provider: *Provider, allocator: Allocator) ProviderError!ListM
 
 /// Executes a single step of interaction with the LLM provider.
 ///
-/// `allocator` is used to allocate the structures and strings in the returned `StepResult`.
+/// `allocator` is used to allocate the structures and strings in the returned `StepOutcome`.
 /// `session_config` configuration for the session, should be constant for all calls to executeStep within a session.
 /// `input` is an array of steps (prompts or tool results) to send to the model.
 /// `previous_step` is the result of the previous interaction, if any, to maintain context.
 ///
-/// The caller **MUST** call `deinit()` on the returned `StepResult` to free the allocated memory.
+/// The caller **MUST** call `deinit()` on both the returned `result` and `continuation` fields of `StepOutcome`
+/// to free the allocated memory.
 pub fn executeStep(
     provider: *Provider,
     allocator: Allocator,
     session_config: SessionConfig,
     input: []const Step,
     previous_step: ?StepContinuation,
-) ProviderError!struct { StepResult, StepContinuation } {
+) ProviderError!StepOutcome {
     return provider.vtable.execute_step(provider.ptr, allocator, session_config, input, previous_step);
 }
 
 /// Executes a single step of interaction with the LLM provider, streaming chunks back to the callback.
 ///
-/// `allocator` is used to allocate internal streaming state and structures in the final returned `StepResult`.
+/// `allocator` is used to allocate internal streaming state and structures in the final returned `StepOutcome`.
 /// `session_config` configuration for the session, should be constant for all calls to executeStep within a session.
 /// `input` is an array of steps (prompts or tool results) to send to the model.
 /// `previous_step` is the result of the previous interaction, if any, to maintain context.
@@ -90,7 +92,8 @@ pub fn executeStep(
 /// Memory Behavior:
 /// - The chunks sent to `callback` are managed by the Provider and will be freed after the callback returns.
 ///   The callback must copy/duplicate any data it needs to retain past the execution of the callback.
-/// - The caller **MUST** call `deinit()` on the returned final `StepResult` to free the accumulated response contents.
+/// - The caller **MUST** call `deinit()` on both the returned `result` and `continuation` fields of `StepOutcome`
+///   to free the accumulated response contents and continuation memory.
 pub fn executeStepStreaming(
     provider: *Provider,
     allocator: Allocator,
@@ -99,7 +102,7 @@ pub fn executeStepStreaming(
     previous_step: ?StepContinuation,
     callback: StreamingCallback,
     callback_context: ?*anyopaque,
-) ProviderError!struct { StepResult, StepContinuation } {
+) ProviderError!StepOutcome {
     return provider.vtable.execute_step_streaming(provider.ptr, allocator, session_config, input, previous_step, callback, callback_context);
 }
 

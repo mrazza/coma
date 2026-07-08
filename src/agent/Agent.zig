@@ -35,14 +35,17 @@ pub fn executeTurn(self: *Agent, allocator: std.mem.Allocator, turn: types.Turn)
     defer tool_steps.deinit(allocator);
 
     while (true) {
-        var step_result, var step_continuation = try self.provider.executeStep(
+        var outcome = try self.provider.executeStep(
             allocator,
             self.session_config,
             if (first_iter) current_input else tool_steps.items,
             self.last_step,
         );
-        errdefer step_result.deinit();
-        errdefer step_continuation.deinit();
+        errdefer outcome.result.deinit();
+        errdefer outcome.continuation.deinit();
+
+        const step_result = outcome.result;
+        const step_continuation = outcome.continuation;
 
         if (!first_iter) {
             for (tool_results.items) |*tr| {

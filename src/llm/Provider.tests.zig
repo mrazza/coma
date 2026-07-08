@@ -34,9 +34,9 @@ test "Provider.executeStep delegates to VTable" {
     var mock_step_continuation: testing.MockProvider.MockStepContinuation = .{};
     const last_step_continuation = mock_step_continuation.stepContinuation();
 
-    var result, var continuation = try prov.executeStep(allocator, session_config, input_steps, last_step_continuation);
-    defer result.deinit();
-    defer continuation.deinit();
+    var outcome = try prov.executeStep(allocator, session_config, input_steps, last_step_continuation);
+    defer outcome.result.deinit();
+    defer outcome.continuation.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_calls);
     try std.testing.expectEqual(allocator, mock_impl.last_allocator.?);
@@ -110,12 +110,12 @@ test "Provider.executeStep returns custom success and error" {
         };
 
         var prov = mock_impl.provider();
-        var result, var continuation = try prov.executeStep(allocator, session_config, &.{}, null);
-        defer result.deinit();
-        defer continuation.deinit();
+        var outcome = try prov.executeStep(allocator, session_config, &.{}, null);
+        defer outcome.result.deinit();
+        defer outcome.continuation.deinit();
 
         try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_calls);
-        try std.testing.expectEqualStrings("custom-output", result.model_output[0].text);
+        try std.testing.expectEqualStrings("custom-output", outcome.result.model_output[0].text);
     }
 
     // Test custom error
@@ -155,9 +155,9 @@ test "Provider.executeStepStreaming delegates to VTable" {
         }
     };
 
-    var result, var continuation = try prov.executeStepStreaming(allocator, session_config, input_steps, prev_continuation, CallbackState.callback, null);
-    defer result.deinit();
-    defer continuation.deinit();
+    var outcome = try prov.executeStepStreaming(allocator, session_config, input_steps, prev_continuation, CallbackState.callback, null);
+    defer outcome.result.deinit();
+    defer outcome.continuation.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_streaming_calls);
     try std.testing.expectEqual(@as(usize, 0), mock_impl.execute_step_calls);
@@ -198,12 +198,12 @@ test "Provider.executeStepStreaming returns custom success and error" {
         };
 
         var prov = mock_impl.provider();
-        var result, var continuation = try prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null);
-        defer result.deinit();
-        defer continuation.deinit();
+        var outcome = try prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null);
+        defer outcome.result.deinit();
+        defer outcome.continuation.deinit();
 
         try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_streaming_calls);
-        try std.testing.expectEqualStrings("custom-output", result.model_output[0].text);
+        try std.testing.expectEqualStrings("custom-output", outcome.result.model_output[0].text);
     }
 
     // Test custom error
