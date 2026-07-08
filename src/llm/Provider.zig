@@ -36,7 +36,7 @@ pub const VTable = struct {
         session_config: SessionConfig,
         input: []const Step,
         previous_step: ?StepContinuation,
-    ) ProviderError!types.StepOutcome,
+    ) ProviderError!StepOutcome,
 
     /// Executes a single interaction step with the LLM, streaming the response.
     execute_step_streaming: *const fn (
@@ -45,9 +45,9 @@ pub const VTable = struct {
         session_config: SessionConfig,
         input: []const Step,
         previous_step: ?StepContinuation,
-        callback: types.StreamingCallback,
+        callback: StreamingCallback,
         callback_context: ?*anyopaque,
-    ) ProviderError!types.StepOutcome,
+    ) ProviderError!StepOutcome,
 
     /// Frees the resources associated with the provider.
     deinit: *const fn (ptr: *anyopaque) void,
