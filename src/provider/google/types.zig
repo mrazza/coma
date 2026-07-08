@@ -47,8 +47,6 @@ pub const ListModelsResult = struct {
 /// A Gemini-specific implementation of the `llm.types.StepResult` interface.
 /// Represents the result of an interaction step with the Gemini API.
 pub const StepResult = struct {
-    interaction_id: []const u8,
-
     model_output: std.ArrayList(llm.types.ModelOutput),
     thoughts: std.ArrayList(llm.types.Thought),
     tool_calls: std.ArrayList(llm.types.ToolCall),
@@ -106,7 +104,6 @@ pub const StepResult = struct {
         const self = try allocator.create(StepResult);
         errdefer allocator.destroy(self);
         self.* = .{
-            .interaction_id = parsed_response.value.id,
             .model_output = model_output_list,
             .thoughts = thoughts_list,
             .tool_calls = tool_calls_list,
@@ -141,8 +138,6 @@ pub const StepResult = struct {
 
 /// A Gemini-specific implementation of the `llm.types.StepResult` interface for streaming requests.
 pub const StreamingStepResult = struct {
-    interaction_id: []const u8,
-
     model_output: []const llm.types.ModelOutput,
     thoughts: []const llm.types.Thought,
     tool_calls: []const llm.types.ToolCall,
@@ -154,7 +149,6 @@ pub const StreamingStepResult = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         arena: std.heap.ArenaAllocator,
-        interaction_id: []const u8,
         model_output: []const llm.types.ModelOutput,
         thoughts: []const llm.types.Thought,
         tool_calls: []const llm.types.ToolCall,
@@ -162,7 +156,6 @@ pub const StreamingStepResult = struct {
         const self = try allocator.create(StreamingStepResult);
         errdefer allocator.destroy(self);
         self.* = .{
-            .interaction_id = interaction_id,
             .model_output = model_output,
             .thoughts = thoughts,
             .tool_calls = tool_calls,
@@ -179,11 +172,47 @@ pub const StreamingStepResult = struct {
         };
     }
 
-    /// Frees the resources associated with the result.
+    /// Frees the resources associated with the StreamingStepResult.
     pub fn deinit(ctx: *anyopaque) void {
         const self: *StreamingStepResult = @ptrCast(@alignCast(ctx));
         const allocator = self.allocator;
         self.arena.deinit();
+        self.* = undefined;
+        allocator.destroy(self);
+    }
+};
+
+pub const StepContinuation = struct {
+    interaction_id: []const u8,
+
+    allocator: std.mem.Allocator,
+
+    /// Initializes a new StepContinuation and returns a reference to it via `llm.types.StepContinuation`.
+    ///
+    /// This function creates a copy of the interaction_id and stores it in the new StepContinuation.
+    /// The StepContinuation will deallocate the interaction_id when it is deinitialized.
+    pub fn init(allocator: std.mem.Allocator, interaction_id: []const u8) !llm.types.StepContinuation {
+        const self = try allocator.create(StepContinuation);
+        errdefer allocator.destroy(self);
+        const dupe_interaction_id = try allocator.dupe(u8, interaction_id);
+        errdefer allocator.free(dupe_interaction_id);
+        self.* = .{
+            .interaction_id = dupe_interaction_id,
+            .allocator = allocator,
+        };
+
+        return .{
+            .ptr = self,
+            .vtable = &.{ .deinit = deinit },
+        };
+    }
+
+    /// Frees the resources associated with the StepContinuation.
+    pub fn deinit(ctx: *anyopaque) void {
+        const self: *StepContinuation = @ptrCast(@alignCast(ctx));
+        const allocator = self.allocator;
+        allocator.free(self.interaction_id);
+        self.* = undefined;
         allocator.destroy(self);
     }
 };

@@ -52,6 +52,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "llm", .module = llm },
             .{ .name = "provider", .module = provider },
+            .{ .name = "testing", .module = testing },
         },
     });
 

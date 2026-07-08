@@ -30,14 +30,11 @@ execute_fn: ToolExecuteFn,
 /// Order is not relevant. Unexpected arguments are ignored.
 ///
 /// Returns a `ToolResult` containing the result of the tool call. The caller is responsible
-/// for freeing the memory in the result's `result` field.
+/// for freeing the `ToolResult` by calling `deinit()`.
 pub fn execute(self: *const Tool, allocator: Allocator, id: []const u8, args: []const Argument) CallError!ToolResult {
     const result = try self.execute_fn(allocator, args);
-    return .{
-        .tool_name = self.descriptor.name,
-        .id = id,
-        .result = result,
-    };
+    defer allocator.free(result);
+    return ToolResult.init(allocator, self.descriptor.name, id, result);
 }
 
 /// Creates a Tool from a descriptor and a function.
@@ -51,9 +48,9 @@ pub fn execute(self: *const Tool, allocator: Allocator, id: []const u8, args: []
 /// provided the other arguments are still in the same order as the parameters in the
 /// descriptor.
 ///
-/// The `execute_fn` should return the result of the tool call as a string. The result will
-/// be passed to the LLM as the result of the tool call. The caller will own the result
-/// and be responsible for freeing it.
+/// The `execute_fn` should return the result of the tool call as a string and transfer
+/// ownership of the memory to the caller. The result will be passed to the LLM as the
+/// result of the tool call.
 pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
     return comptime blk: {
         for (descriptor.parameters, 0..) |p1, i| {
@@ -202,7 +199,6 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                         if (opt_argument) |argument| {
                             const expected_tag = comptime try expectedTagForType(T);
                             if (argument.value != expected_tag.tag) {
-                                std.debug.print("expected {}, actual {} [descriptor {s}]\n", .{ expected_tag.tag, argument.value, curr_descriptor.name });
                                 return CallError.ArgumentTypeMismatch;
                             }
                             args[func_idx] = switch (expected_tag.tag) {
@@ -258,8 +254,8 @@ test init {
         .{ .name = "arg2", .value = .{ .string = "hello" } },
     };
 
-    const result = try tool.execute(allocator, "123", &args);
-    defer allocator.free(result.result);
+    var result = try tool.execute(allocator, "123", &args);
+    defer result.deinit();
 
     try std.testing.expectEqualStrings("example_function", result.tool_name);
     try std.testing.expectEqualStrings("123", result.id);
@@ -483,8 +479,8 @@ test execute {
             .value = .{ .string = "value" },
         },
     };
-    const result = try tool.execute(testing_allocator, "id", args);
-    defer testing_allocator.free(result.result);
+    var result = try tool.execute(testing_allocator, "id", args);
+    defer result.deinit();
 
     try std.testing.expectEqualStrings("test_tool", result.tool_name);
     try std.testing.expectEqualStrings("id", result.id);
@@ -550,8 +546,8 @@ test "execute - extra argument ignored" {
             .value = .{ .string = "value2" },
         },
     };
-    const result = try tool.execute(testing_allocator, "id", args);
-    defer testing_allocator.free(result.result);
+    var result = try tool.execute(testing_allocator, "id", args);
+    defer result.deinit();
     try std.testing.expectEqualStrings("value1", result.result);
 }
 
@@ -601,8 +597,8 @@ test "execute - missing optional argument" {
     };
     const tool = Tool.init(desc, Impl.run);
     const args: []const Argument = &.{};
-    const result = try tool.execute(testing_allocator, "id", args);
-    defer testing_allocator.free(result.result);
+    var result = try tool.execute(testing_allocator, "id", args);
+    defer result.deinit();
 
     try std.testing.expectEqualStrings("test_tool", result.tool_name);
     try std.testing.expectEqualStrings("id", result.id);
@@ -664,8 +660,8 @@ test "execute - no Allocator parameter" {
         .{ .name = "arg1", .value = .{ .string = "hello" } },
     };
 
-    const result = try tool.execute(allocator, "abc", &args);
-    defer allocator.free(result.result);
+    var result = try tool.execute(allocator, "abc", &args);
+    defer result.deinit();
 
     try std.testing.expectEqualStrings("no_allocator_func", result.tool_name);
     try std.testing.expectEqualStrings("abc", result.id);
@@ -705,8 +701,8 @@ test "execute - Allocator as middle/last parameter" {
         .{ .name = "arg2", .value = .{ .string = "test" } },
     };
 
-    const result = try tool.execute(allocator, "xyz", &args);
-    defer allocator.free(result.result);
+    var result = try tool.execute(allocator, "xyz", &args);
+    defer result.deinit();
 
     try std.testing.expectEqualStrings("middle_last_allocator_func", result.tool_name);
     try std.testing.expectEqualStrings("xyz", result.id);
@@ -740,8 +736,8 @@ test "execute - multiple Allocator parameters" {
         .{ .name = "arg1", .value = .{ .integer = 7 } },
     };
 
-    const result = try tool.execute(allocator, "multi", &args);
-    defer allocator.free(result.result);
+    var result = try tool.execute(allocator, "multi", &args);
+    defer result.deinit();
 
     try std.testing.expectEqualStrings("multi_allocator_func", result.tool_name);
     try std.testing.expectEqualStrings("multi", result.id);

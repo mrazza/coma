@@ -104,10 +104,10 @@ fn MakeProvider(comptime ClientType: type) type {
             arena_allocator: Allocator,
             session_config: llm.types.SessionConfig,
             input: []const llm.types.Step,
-            previous_step: ?llm.types.StepResult,
+            previous_step: ?llm.types.StepContinuation,
             stream: bool,
         ) !struct { uri: std.Uri, payload: api.CreateInteractionRequest } {
-            const previous_gemini_step: ?*gemini_types.StepResult = if (previous_step) |step| @ptrCast(@alignCast(step.ptr)) else null;
+            const previous_gemini_step: ?*gemini_types.StepContinuation = if (previous_step) |step| @ptrCast(@alignCast(step.ptr)) else null;
 
             var tools: []api.Tool = &.{};
             if (session_config.tools.len > 0) {
@@ -147,14 +147,22 @@ fn MakeProvider(comptime ClientType: type) type {
         /// The caller **MUST** call `deinit()` on the returned `StepResult` to free its allocated contents.
         ///
         /// Returns the `StepResult` detailing thoughts, outputs, and tool calls, or a `ProviderError` on failure.
-        pub fn executeStep(ctx: *anyopaque, allocator: Allocator, session_config: llm.types.SessionConfig, input: []const llm.types.Step, previous_step: ?llm.types.StepResult) !llm.types.StepResult {
+        pub fn executeStep(
+            ctx: *anyopaque,
+            allocator: Allocator,
+            session_config: llm.types.SessionConfig,
+            input: []const llm.types.Step,
+            previous_step: ?llm.types.StepContinuation,
+        ) !struct { llm.types.StepResult, llm.types.StepContinuation } {
             const self: *Self = @ptrCast(@alignCast(ctx));
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
 
             const req_data = try self.buildCreateInteractionRequest(arena.allocator(), session_config, input, previous_step, false);
             const response = self.rpc_client.postRequest(allocator, api.CreateInteractionRequest, api.Interaction, req_data.uri, req_data.payload) catch return ProviderError.HttpRequestFailed;
-            return try gemini_types.StepResult.init(allocator, response);
+            const step_result = try gemini_types.StepResult.init(allocator, response);
+            const step_contuation = try gemini_types.StepContinuation.init(allocator, response.value.id);
+            return .{ step_result, step_contuation };
         }
 
         /// Executes a single interaction step using the Gemini API, streaming chunks of the response back.
@@ -178,10 +186,10 @@ fn MakeProvider(comptime ClientType: type) type {
             allocator: Allocator,
             session_config: llm.types.SessionConfig,
             input: []const llm.types.Step,
-            previous_step: ?llm.types.StepResult,
+            previous_step: ?llm.types.StepContinuation,
             callback: llm.types.StreamingCallback,
             callback_context: ?*anyopaque,
-        ) !llm.types.StepResult {
+        ) !struct { llm.types.StepResult, llm.types.StepContinuation } {
             const self: *Self = @ptrCast(@alignCast(ctx));
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
@@ -350,14 +358,15 @@ fn MakeProvider(comptime ClientType: type) type {
 
             const final_id = interaction_id orelse try result_arena.allocator().dupe(u8, "unknown");
 
-            return try gemini_types.StreamingStepResult.init(
+            const step_result = try gemini_types.StreamingStepResult.init(
                 allocator,
                 result_arena,
-                final_id,
                 try final_model_outputs.toOwnedSlice(result_arena.allocator()),
                 try final_thoughts.toOwnedSlice(result_arena.allocator()),
                 try final_tool_calls.toOwnedSlice(result_arena.allocator()),
             );
+            const step_continuation = try gemini_types.StepContinuation.init(allocator, final_id);
+            return .{ step_result, step_continuation };
         }
     };
 }
@@ -646,16 +655,17 @@ test "Gemini.executeStep success" {
         .{ .prompt = "Hello" },
     };
 
-    var result = try p.executeStep(allocator, config, input, null);
+    var result, var continuation = try p.executeStep(allocator, config, input, null);
     defer result.deinit();
+    defer continuation.deinit();
 
     try std.testing.expectEqual(1, result.model_output.len);
     try std.testing.expectEqualStrings("Hello user!", result.model_output[0].text);
     try std.testing.expectEqual(1, result.thoughts.len);
     try std.testing.expectEqualStrings("Thinking...", result.thoughts[0].text);
 
-    const gemini_result: *gemini_types.StepResult = @ptrCast(@alignCast(result.ptr));
-    try std.testing.expectEqualStrings("interaction_123", gemini_result.interaction_id);
+    const gemini_continuation: *gemini_types.StepContinuation = @ptrCast(@alignCast(continuation.ptr));
+    try std.testing.expectEqualStrings("interaction_123", gemini_continuation.interaction_id);
     try std.testing.expectEqual(1, call_counts[0]);
 }
 
@@ -740,8 +750,9 @@ test "Gemini.executeStep with previous step" {
     const input1 = &[_]llm.types.Step{
         .{ .prompt = "Hello" },
     };
-    var result1 = try p.executeStep(allocator, config, input1, null);
+    var result1, var continuation1 = try p.executeStep(allocator, config, input1, null);
     defer result1.deinit();
+    defer continuation1.deinit();
 
     try std.testing.expectEqualStrings("Hello user!", result1.model_output[0].text);
 
@@ -749,8 +760,9 @@ test "Gemini.executeStep with previous step" {
     const input2 = &[_]llm.types.Step{
         .{ .prompt = "Next prompt" },
     };
-    var result2 = try p.executeStep(allocator, config, input2, result1);
+    var result2, var continuation2 = try p.executeStep(allocator, config, input2, continuation1);
     defer result2.deinit();
+    defer continuation2.deinit();
 
     try std.testing.expectEqualStrings("Next response", result2.model_output[0].text);
     try std.testing.expectEqual(1, call_counts[0]);
@@ -820,8 +832,9 @@ test "Gemini.executeStep with tools" {
         .{ .prompt = "Hello" },
     };
 
-    var result = try p.executeStep(allocator, config, input, null);
+    var result, var continuation = try p.executeStep(allocator, config, input, null);
     defer result.deinit();
+    defer continuation.deinit();
 
     try std.testing.expectEqualStrings("Weather is nice!", result.model_output[0].text);
     try std.testing.expectEqual(1, call_counts[0]);
@@ -984,8 +997,9 @@ test "Gemini.executeStepStreaming success" {
     defer ctx.model_output_text.deinit();
     defer ctx.thought_text.deinit();
 
-    var result = try p.executeStepStreaming(allocator, config, input, null, Context.callback, &ctx);
+    var result, var continuation = try p.executeStepStreaming(allocator, config, input, null, Context.callback, &ctx);
     defer result.deinit();
+    defer continuation.deinit();
 
     // Verify callback executions
     try std.testing.expect(ctx.chunks_received > 0);
@@ -1007,8 +1021,8 @@ test "Gemini.executeStepStreaming success" {
     try std.testing.expectEqualStrings("location", result.tool_calls[0].arguments[0].name);
     try std.testing.expectEqualStrings("San Francisco", result.tool_calls[0].arguments[0].value.string);
 
-    const gemini_result: *gemini_types.StreamingStepResult = @ptrCast(@alignCast(result.ptr));
-    try std.testing.expectEqualStrings("interaction_streaming_123", gemini_result.interaction_id);
+    const gemini_continuation: *gemini_types.StepContinuation = @ptrCast(@alignCast(continuation.ptr));
+    try std.testing.expectEqualStrings("interaction_streaming_123", gemini_continuation.interaction_id);
     try std.testing.expectEqual(1, call_counts[0]);
 }
 
@@ -1144,8 +1158,9 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
     defer ctx.model_output_text.deinit();
     defer ctx.thought_text.deinit();
 
-    var result = try p.executeStepStreaming(allocator, config, input, null, Context.callback, &ctx);
+    var result, var continuation = try p.executeStepStreaming(allocator, config, input, null, Context.callback, &ctx);
     defer result.deinit();
+    defer continuation.deinit();
 
     // Verify callback executions
     try std.testing.expect(ctx.chunks_received > 0);
@@ -1166,8 +1181,8 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
     try std.testing.expectEqualStrings("location", result.tool_calls[0].arguments[0].name);
     try std.testing.expectEqualStrings("San Francisco", result.tool_calls[0].arguments[0].value.string);
 
-    const gemini_result: *gemini_types.StreamingStepResult = @ptrCast(@alignCast(result.ptr));
-    try std.testing.expectEqualStrings("interaction_streaming_123", gemini_result.interaction_id);
+    const gemini_continuation: *gemini_types.StepContinuation = @ptrCast(@alignCast(continuation.ptr));
+    try std.testing.expectEqualStrings("interaction_streaming_123", gemini_continuation.interaction_id);
     try std.testing.expectEqual(1, call_counts[0]);
 }
 
@@ -1307,10 +1322,11 @@ test "Gemini.executeStep returns function call" {
         .tools = &.{},
     };
 
-    var result = try p.executeStep(allocator, config, &.{}, null);
+    var result, var continuation = try p.executeStep(allocator, config, &.{}, null);
     defer result.deinit();
+    defer continuation.deinit();
 
-    try std.testing.expectEqualStrings("interaction_fc", (@as(*gemini_types.StepResult, @ptrCast(@alignCast(result.ptr)))).interaction_id);
+    try std.testing.expectEqualStrings("interaction_fc", (@as(*gemini_types.StepContinuation, @ptrCast(@alignCast(continuation.ptr)))).interaction_id);
     try std.testing.expectEqual(1, result.tool_calls.len);
     try std.testing.expectEqualStrings("call_abc", result.tool_calls[0].id);
     try std.testing.expectEqualStrings("get_weather", result.tool_calls[0].name);
@@ -1514,9 +1530,10 @@ test "Gemini.executeStepStreaming fallback interaction ID to unknown" {
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
         .tools = &.{},
     };
-    var result = try p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null);
+    var result, var continuation = try p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null);
     defer result.deinit();
-    try std.testing.expectEqualStrings("unknown", (@as(*gemini_types.StreamingStepResult, @ptrCast(@alignCast(result.ptr)))).interaction_id);
+    defer continuation.deinit();
+    try std.testing.expectEqualStrings("unknown", (@as(*gemini_types.StepContinuation, @ptrCast(@alignCast(continuation.ptr)))).interaction_id);
 }
 
 test "ListModelsResult.init OOM" {
@@ -1538,5 +1555,9 @@ test "StepResult.init OOM" {
 test "StreamingStepResult.init OOM" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try std.testing.expectError(error.OutOfMemory, gemini_types.StreamingStepResult.init(std.testing.failing_allocator, arena, "id", &.{}, &.{}, &.{}));
+    try std.testing.expectError(error.OutOfMemory, gemini_types.StreamingStepResult.init(std.testing.failing_allocator, arena, &.{}, &.{}, &.{}));
+}
+
+test "StepContinuation.init OOM" {
+    try std.testing.expectError(error.OutOfMemory, gemini_types.StepContinuation.init(std.testing.failing_allocator, "id"));
 }

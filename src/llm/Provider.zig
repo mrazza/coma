@@ -6,6 +6,7 @@ const StepResult = types.StepResult;
 const SessionConfig = types.SessionConfig;
 const Step = types.Step;
 const StreamingCallback = types.StreamingCallback;
+const StepContinuation = types.StepContinuation;
 
 /// An interface for an LLM provider.
 const Provider = @This();
@@ -33,8 +34,8 @@ pub const VTable = struct {
         allocator: Allocator,
         session_config: SessionConfig,
         input: []const Step,
-        previous_step: ?StepResult,
-    ) ProviderError!StepResult,
+        previous_step: ?StepContinuation,
+    ) ProviderError!struct { StepResult, StepContinuation },
 
     /// Executes a single interaction step with the LLM, streaming the response.
     execute_step_streaming: *const fn (
@@ -42,10 +43,10 @@ pub const VTable = struct {
         allocator: Allocator,
         session_config: SessionConfig,
         input: []const Step,
-        previous_step: ?StepResult,
+        previous_step: ?StepContinuation,
         callback: types.StreamingCallback,
         callback_context: ?*anyopaque,
-    ) ProviderError!StepResult,
+    ) ProviderError!struct { StepResult, StepContinuation },
 
     /// Frees the resources associated with the provider.
     deinit: *const fn (ptr: *anyopaque) void,
@@ -72,8 +73,8 @@ pub fn executeStep(
     allocator: Allocator,
     session_config: SessionConfig,
     input: []const Step,
-    previous_step: ?StepResult,
-) ProviderError!StepResult {
+    previous_step: ?StepContinuation,
+) ProviderError!struct { StepResult, StepContinuation } {
     return provider.vtable.execute_step(provider.ptr, allocator, session_config, input, previous_step);
 }
 
@@ -95,10 +96,10 @@ pub fn executeStepStreaming(
     allocator: Allocator,
     session_config: SessionConfig,
     input: []const Step,
-    previous_step: ?StepResult,
+    previous_step: ?StepContinuation,
     callback: StreamingCallback,
     callback_context: ?*anyopaque,
-) ProviderError!StepResult {
+) ProviderError!struct { StepResult, StepContinuation } {
     return provider.vtable.execute_step_streaming(provider.ptr, allocator, session_config, input, previous_step, callback, callback_context);
 }
 
