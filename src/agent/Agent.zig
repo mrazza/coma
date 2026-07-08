@@ -64,6 +64,7 @@ pub fn executeTurn(self: *Agent, allocator: std.mem.Allocator, turn: types.Turn)
             self.last_step = step_continuation;
             break;
         }
+        defer outcome.result.deinit();
 
         for (step_result.tool_calls) |tool_call| {
             const tool = for (self.tools) |t| {
