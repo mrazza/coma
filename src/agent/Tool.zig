@@ -33,8 +33,8 @@ execute_fn: ToolExecuteFn,
 /// for freeing the `ToolResult` by calling `deinit()`.
 pub fn execute(self: *const Tool, allocator: Allocator, id: []const u8, args: []const Argument) CallError!ToolResult {
     const result = try self.execute_fn(allocator, args);
-    defer allocator.free(result);
-    return ToolResult.init(allocator, self.descriptor.name, id, result);
+    errdefer allocator.free(result);
+    return ToolResult.initTakingResultOwnership(allocator, self.descriptor.name, id, result);
 }
 
 /// Creates a Tool from a descriptor and a function.
