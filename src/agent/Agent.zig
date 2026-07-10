@@ -8,87 +8,76 @@ const Agent = @This();
 provider: llm.Provider,
 tools: []const Tool,
 session_config: llm.types.SessionConfig,
-last_step: ?llm.types.StepContinuation,
+prev_continuation: ?llm.types.StepContinuation,
 
 pub fn deinit(self: *Agent) void {
-    if (self.last_step) |*ls| {
+    if (self.prev_continuation) |*ls| {
         ls.deinit();
-        self.last_step = null;
+        self.prev_continuation = null;
     }
 }
 
 pub fn executeTurn(self: *Agent, allocator: std.mem.Allocator, turn: types.Turn) !types.TurnResult {
-    var first_iter = true;
-    var final_step: ?llm.types.StepResult = null;
-    const initial_step = llm.types.Step{ .prompt = turn.prompt };
-    const current_input = &[_]llm.types.Step{initial_step};
+    var next_steps: std.ArrayList(llm.types.Step) = .empty;
+    defer next_steps.deinit(allocator);
+    try next_steps.append(allocator, .{ .prompt = turn.prompt });
 
-    var tool_results: std.ArrayList(llm.types.ToolResult) = .empty;
+    var intermediate_results: std.ArrayList(types.IntermediateStepResult) = .empty;
     defer {
-        for (tool_results.items) |*tr| {
-            tr.deinit();
+        // `intermediate_results` will own the memory for all non-final steps; that is, all steps
+        // that are model or tool outputs but not the initial user input or final result.
+        // These values will, in the event of a non-error, have their ownership transfered to
+        // the returned `TurnResult`.
+        for (intermediate_results.items) |*ir| {
+            ir.deinit();
         }
-        tool_results.deinit(allocator);
+        intermediate_results.deinit(allocator);
     }
-
-    var tool_steps: std.ArrayList(llm.types.Step) = .empty;
-    defer tool_steps.deinit(allocator);
 
     while (true) {
-        var outcome = try self.provider.executeStep(
+        const step_outcome = try self.provider.executeStep(
             allocator,
             self.session_config,
-            if (first_iter) current_input else tool_steps.items,
-            self.last_step,
+            next_steps.items,
+            self.prev_continuation,
         );
-        errdefer outcome.result.deinit();
-        errdefer outcome.continuation.deinit();
+        next_steps.clearRetainingCapacity();
 
-        const step_result = outcome.result;
-        const step_continuation = outcome.continuation;
+        var step_result = step_outcome.result;
+        const step_continuation = step_outcome.continuation;
 
-        if (!first_iter) {
-            for (tool_results.items) |*tr| {
-                tr.deinit();
-            }
-            tool_results.clearRetainingCapacity();
-            tool_steps.clearRetainingCapacity();
-        }
-        first_iter = false;
+        if (self.prev_continuation) |*old_continuation| old_continuation.deinit();
+        self.prev_continuation = step_continuation;
 
-        if (step_result.tool_calls.len == 0) {
-            if (self.last_step) |*ls| {
-                ls.deinit();
-            }
-            final_step = step_result;
-            self.last_step = step_continuation;
-            break;
-        }
-        defer outcome.result.deinit();
-
-        for (step_result.tool_calls) |tool_call| {
-            const tool = for (self.tools) |t| {
-                if (std.mem.eql(u8, t.descriptor.name, tool_call.name)) {
-                    break t;
-                }
-            } else {
-                return error.ToolNotFound;
-            };
-
-            var tr = try tool.execute(allocator, tool_call.id, tool_call.arguments);
-            tool_results.append(allocator, tr) catch |err| {
-                tr.deinit();
+        if (step_result.tool_calls.len > 0) {
+            intermediate_results.append(allocator, .{ .step_result = step_result }) catch |err| {
+                step_result.deinit();
                 return err;
             };
-            try tool_steps.append(allocator, .{ .tool_result = tr });
-        }
+            for (step_result.tool_calls) |tool_call| {
+                const tool = for (self.tools) |t| {
+                    if (std.mem.eql(u8, t.descriptor.name, tool_call.name)) {
+                        break t;
+                    }
+                } else {
+                    return error.ToolNotFound;
+                };
 
-        if (self.last_step) |*ls| {
-            ls.deinit();
+                var tool_result = try tool.execute(allocator, tool_call.id, tool_call.arguments);
+                intermediate_results.append(allocator, .{ .tool_result = tool_result }) catch |err| {
+                    tool_result.deinit();
+                    return err;
+                };
+                try next_steps.append(allocator, .{ .tool_result = tool_result });
+            }
+        } else {
+            return .{
+                .allocator = allocator,
+                .final_step = step_result,
+                .intermediate_steps = try intermediate_results.toOwnedSlice(allocator),
+            };
         }
-        self.last_step = step_continuation;
     }
-    return types.TurnResult{ .allocator = allocator, .final_step = final_step.?, .intermediate_steps = &.{} };
 }
 
 const testing_pkg = @import("testing");
@@ -111,7 +100,7 @@ test "Agent.executeTurn - no tool calls" {
             .model = mock_model,
             .tools = &.{},
         },
-        .last_step = null,
+        .prev_continuation = null,
     };
     defer agent.deinit();
 
@@ -131,7 +120,7 @@ test "Agent.executeTurn - no tool calls" {
     defer result.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), mock_provider.execute_step_calls);
-    try std.testing.expect(agent.last_step != null);
+    try std.testing.expect(agent.prev_continuation != null);
     try std.testing.expectEqualStrings("Hello user!", result.final_step.model_output[0].text);
 }
 
@@ -185,7 +174,7 @@ test "Agent.executeTurn - executes tool call and runs again" {
             .model = mock_model,
             .tools = &.{tool.descriptor},
         },
-        .last_step = null,
+        .prev_continuation = null,
     };
     defer agent.deinit();
 
@@ -218,6 +207,6 @@ test "Agent.executeTurn - executes tool call and runs again" {
     defer result.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), mock_provider.execute_step_calls);
-    try std.testing.expect(agent.last_step != null);
+    try std.testing.expect(agent.prev_continuation != null);
     try std.testing.expectEqualStrings("Final output after tool", result.final_step.model_output[0].text);
 }
