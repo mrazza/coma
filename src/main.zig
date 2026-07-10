@@ -335,7 +335,7 @@ pub fn main(init: std.process.Init) !void {
         .provider = client,
         .tools = tools,
         .session_config = session_config,
-        .last_step = null,
+        .prev_continuation = null,
     };
     defer agent.deinit();
 
