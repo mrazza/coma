@@ -190,6 +190,25 @@ pub const ToolResult = struct {
         };
     }
 
+    /// Initializes a new Agent-managed ToolResult and returns a reference to it via `llm.types.ToolResult`.
+    ///
+    /// This method duplicates `tool_name`, and `id` using the provided allocator but takes ownership of `result`.
+    /// Memory must be released via `deinit()` and `result` must have been allocated with the same allocator
+    /// passed to this function.
+    pub fn initTakingResultOwnership(allocator: Allocator, tool_name: []const u8, id: []const u8, result: []const u8) !ToolResult {
+        const dupe_tool_name = try allocator.dupe(u8, tool_name);
+        errdefer allocator.free(dupe_tool_name);
+        const dupe_id = try allocator.dupe(u8, id);
+        errdefer allocator.free(dupe_id);
+
+        return .{
+            .tool_name = dupe_tool_name,
+            .id = dupe_id,
+            .result = result,
+            .allocator = allocator,
+        };
+    }
+
     /// Deinitializes the ToolResult and frees all associated memory.
     ///
     /// This method must be called exactly once for each ToolResult when it is no longer needed.
