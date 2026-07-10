@@ -3,6 +3,8 @@ const llm = @import("llm");
 const Tool = @import("./Tool.zig");
 const types = @import("./types.zig");
 
+const Allocator = std.mem.Allocator;
+
 const Agent = @This();
 
 provider: llm.Provider,
@@ -17,7 +19,7 @@ pub fn deinit(self: *Agent) void {
     }
 }
 
-pub fn executeTurn(self: *Agent, allocator: std.mem.Allocator, turn: types.Turn) !types.TurnResult {
+pub fn executeTurn(self: *Agent, allocator: Allocator, turn: types.Turn) !types.TurnResult {
     var next_steps: std.ArrayList(llm.types.Step) = .empty;
     defer next_steps.deinit(allocator);
     try next_steps.append(allocator, .{ .prompt = turn.prompt });
