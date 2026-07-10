@@ -359,26 +359,15 @@ pub fn main(init: std.process.Init) !void {
         if (user_input.len == 0) break;
 
         const turn = types.Turn{ .prompt = user_input };
-        var result = agent.executeTurn(allocator, turn) catch |err| {
+        var stream_ctx = StreamContext{ .allocator = allocator };
+        var result = agent.executeTurnStreaming(allocator, turn, streamCallback, &stream_ctx) catch |err| {
             std.debug.print("Error during execution: {}\n", .{err});
             continue;
         };
         defer result.deinit();
 
-        const last = result.final_step;
-        if (last.thoughts.len > 0) {
-            std.debug.print("{s}Thinking...{s}\n", .{ color_gray, color_reset });
-            for (last.thoughts) |thought| {
-                std.debug.print("{s}{s}", .{ color_gray, thought.text });
-            }
-            std.debug.print("{s}\n", .{color_reset});
-        }
-        for (last.model_output) |output| {
-            switch (output) {
-                .text => |text| {
-                    std.debug.print("\n{s}Agent >{s} {s}\n", .{ color_cyan ++ color_bold, color_reset, text });
-                },
-            }
+        if (stream_ctx.current_type != null) {
+            std.debug.print("\n", .{});
         }
     }
 }

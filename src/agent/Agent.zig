@@ -20,6 +20,26 @@ pub fn deinit(self: *Agent) void {
 }
 
 pub fn executeTurn(self: *Agent, allocator: Allocator, turn: types.Turn) !types.TurnResult {
+    return self.executeTurnInternal(allocator, turn, null, null);
+}
+
+pub fn executeTurnStreaming(
+    self: *Agent,
+    allocator: Allocator,
+    turn: types.Turn,
+    callback: llm.types.StreamingCallback,
+    callback_context: ?*anyopaque,
+) !types.TurnResult {
+    return self.executeTurnInternal(allocator, turn, callback, callback_context);
+}
+
+fn executeTurnInternal(
+    self: *Agent,
+    allocator: Allocator,
+    turn: types.Turn,
+    callback: ?llm.types.StreamingCallback,
+    callback_context: ?*anyopaque,
+) !types.TurnResult {
     var next_steps: std.ArrayList(llm.types.Step) = .empty;
     defer next_steps.deinit(allocator);
     try next_steps.append(allocator, .{ .prompt = turn.prompt });
@@ -37,12 +57,22 @@ pub fn executeTurn(self: *Agent, allocator: Allocator, turn: types.Turn) !types.
     }
 
     while (true) {
-        const step_outcome = try self.provider.executeStep(
-            allocator,
-            self.session_config,
-            next_steps.items,
-            self.prev_continuation,
-        );
+        const step_outcome = if (callback) |cb|
+            try self.provider.executeStepStreaming(
+                allocator,
+                self.session_config,
+                next_steps.items,
+                self.prev_continuation,
+                cb,
+                callback_context,
+            )
+        else
+            try self.provider.executeStep(
+                allocator,
+                self.session_config,
+                next_steps.items,
+                self.prev_continuation,
+            );
         next_steps.clearRetainingCapacity();
 
         var step_result = step_outcome.result;
@@ -125,6 +155,62 @@ test "Agent.executeTurn - no tool calls" {
     try std.testing.expect(agent.prev_continuation != null);
     try std.testing.expectEqualStrings("Hello user!", result.final_step.model_output[0].text);
 }
+
+test "Agent.executeTurnStreaming - no tool calls" {
+    const allocator = std.testing.allocator;
+    var mock_provider = testing_pkg.MockProvider{};
+    const prov = mock_provider.provider();
+
+    const mock_model = llm.types.Model{
+        .id = "mock-model",
+        .display_name = "Mock Model",
+    };
+
+    var agent = Agent{
+        .provider = prov,
+        .tools = &.{},
+        .session_config = .{
+            .model = mock_model,
+            .tools = &.{},
+        },
+        .prev_continuation = null,
+    };
+    defer agent.deinit();
+
+    mock_provider.execute_step_result = llm.types.StepResult{
+        .model_output = &.{.{ .text = "Hello user!" }},
+        .thoughts = &.{},
+        .tool_calls = &.{},
+        .ptr = &mock_provider,
+        .vtable = &testing_pkg.MockProvider.mock_step_vtable,
+    };
+    var mock_continuation: testing_pkg.MockProvider.MockStepContinuation = .{};
+    mock_provider.execute_step_continuation = mock_continuation.stepContinuation();
+
+    const turn = types.Turn{ .prompt = "Hi agent" };
+
+    const DummyContext = struct {
+        called: bool = false,
+    };
+    var dummy_ctx = DummyContext{};
+
+    const callback = struct {
+        fn cb(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            _ = chunk;
+            const c: *DummyContext = @ptrCast(@alignCast(ctx));
+            c.called = true;
+        }
+    }.cb;
+
+    var result = try agent.executeTurnStreaming(allocator, turn, callback, &dummy_ctx);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), mock_provider.execute_step_streaming_calls);
+    try std.testing.expectEqual(@as(usize, 0), mock_provider.execute_step_calls);
+    try std.testing.expect(agent.prev_continuation != null);
+    try std.testing.expectEqualStrings("Hello user!", result.final_step.model_output[0].text);
+}
+
 
 const MockToolImpl = struct {
     pub fn execute(allocator: std.mem.Allocator, val: i64) ![]const u8 {
