@@ -31,8 +31,7 @@ test "Provider.executeStep delegates to VTable" {
         .{ .prompt = "hello" },
     };
 
-    var mock_step_continuation: testing.MockProvider.MockStepContinuation = .{};
-    const last_step_continuation = mock_step_continuation.stepContinuation();
+    const last_step_continuation = testing.MockProvider.stepContinuation();
 
     var outcome = try prov.executeStep(allocator, session_config, input_steps, last_step_continuation);
     defer outcome.result.deinit();
@@ -62,11 +61,7 @@ test "Provider.listModels returns custom success and error" {
         const dummy_models = &[_]llm.types.Model{
             .{ .id = "custom-id", .display_name = "Custom Name" },
         };
-        mock_impl.list_models_result = llm.types.ListModelsResult{
-            .models = dummy_models,
-            .ptr = &mock_impl,
-            .vtable = &testing.MockProvider.mock_list_models_vtable,
-        };
+        mock_impl.list_models_result = testing.MockProvider.listModelsResult(dummy_models);
 
         var prov = mock_impl.provider();
         var result = try prov.listModels(allocator);
@@ -97,17 +92,13 @@ test "Provider.executeStep returns custom success and error" {
         const dummy_outputs = &[_]llm.types.ModelOutput{
             .{ .text = "custom-output" },
         };
-        mock_impl.execute_step_result = llm.types.StepResult{
-            .model_output = dummy_outputs,
-            .thoughts = &.{},
-            .tool_calls = &.{},
-            .ptr = &mock_impl,
-            .vtable = &testing.MockProvider.mock_step_vtable,
+        const step_result = testing.MockProvider.stepResult(dummy_outputs, &.{}, &.{});
+        const step_continuation = testing.MockProvider.stepContinuation();
+        const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+            .{ .result = step_result, .continuation = step_continuation },
         };
-        mock_impl.execute_step_continuation = llm.types.StepContinuation{
-            .ptr = &mock_impl,
-            .vtable = &testing.MockProvider.mock_continuation_vtable,
-        };
+        mock_impl.execute_step_results = &outcomes;
+
 
         var prov = mock_impl.provider();
         var outcome = try prov.executeStep(allocator, session_config, &.{}, null);
@@ -121,7 +112,10 @@ test "Provider.executeStep returns custom success and error" {
     // Test custom error
     {
         var mock_impl = testing.MockProvider{};
-        mock_impl.execute_step_result = error.HttpRequestFailed;
+        const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+            error.HttpRequestFailed,
+        };
+        mock_impl.execute_step_results = &outcomes;
 
         var prov = mock_impl.provider();
         try std.testing.expectError(error.HttpRequestFailed, prov.executeStep(allocator, session_config, &.{}, null));
@@ -145,8 +139,7 @@ test "Provider.executeStepStreaming delegates to VTable" {
         .{ .prompt = "hello" },
     };
 
-    var mock_continuation: testing.MockProvider.MockStepContinuation = .{};
-    const prev_continuation = mock_continuation.stepContinuation();
+    const prev_continuation = testing.MockProvider.stepContinuation();
 
     const CallbackState = struct {
         fn callback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
@@ -185,17 +178,13 @@ test "Provider.executeStepStreaming returns custom success and error" {
         const dummy_outputs = &[_]llm.types.ModelOutput{
             .{ .text = "custom-output" },
         };
-        mock_impl.execute_step_result = llm.types.StepResult{
-            .model_output = dummy_outputs,
-            .thoughts = &.{},
-            .tool_calls = &.{},
-            .ptr = &mock_impl,
-            .vtable = &testing.MockProvider.mock_step_vtable,
+        const step_result = testing.MockProvider.stepResult(dummy_outputs, &.{}, &.{});
+        const step_continuation = testing.MockProvider.stepContinuation();
+        const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+            .{ .result = step_result, .continuation = step_continuation },
         };
-        mock_impl.execute_step_continuation = llm.types.StepContinuation{
-            .ptr = &mock_impl,
-            .vtable = &testing.MockProvider.mock_continuation_vtable,
-        };
+        mock_impl.execute_step_results = &outcomes;
+
 
         var prov = mock_impl.provider();
         var outcome = try prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null);
@@ -209,7 +198,10 @@ test "Provider.executeStepStreaming returns custom success and error" {
     // Test custom error
     {
         var mock_impl = testing.MockProvider{};
-        mock_impl.execute_step_result = error.HttpRequestFailed;
+        const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+            error.HttpRequestFailed,
+        };
+        mock_impl.execute_step_results = &outcomes;
 
         var prov = mock_impl.provider();
         try std.testing.expectError(error.HttpRequestFailed, prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null));

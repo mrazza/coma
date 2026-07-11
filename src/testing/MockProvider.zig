@@ -34,11 +34,13 @@ last_previous_step: ?StepContinuation = null,
 
 /// Optional fixed result to return from `listModels`.
 list_models_result: ?(Provider.ProviderError!ListModelsResult) = null,
-/// Optional fixed result to return from `executeStep`.
-execute_step_result: ?(Provider.ProviderError!StepResult) = null,
-/// Optional fixed continuation to return from `executeStep`.
-/// Must be set if `execute_step_result` is set.
-execute_step_continuation: ?StepContinuation = null,
+/// Optional sequence of results/outcomes to return from successive `executeStep` or `executeStepStreaming` calls.
+execute_step_results: ?[]const (Provider.ProviderError!StepOutcome) = null,
+/// Whether to loop back to the start of execute_step_results when more calls are made than outcomes available.
+execute_step_results_loop: bool = true,
+/// Optional sequence of streaming chunks to emit during successive `executeStepStreaming` calls.
+execute_step_streaming_chunks: ?[]const []const types.StreamingChunk = null,
+
 
 const vtable = Provider.VTable{
     .list_models = MockProvider.list_models,
@@ -104,9 +106,18 @@ fn execute_step(
     self.last_session_config = session_config;
     self.last_input = input;
     self.last_previous_step = previous_step;
-    if (self.execute_step_result) |res| {
-        const ok = try res;
-        return StepOutcome{ .result = ok, .continuation = self.execute_step_continuation.? };
+    if (self.execute_step_results) |results| {
+        if (results.len == 0) {
+            @panic("execute_step_results is empty");
+        }
+        const call_idx = self.execute_step_calls - 1;
+        if (call_idx < results.len) {
+            return results[call_idx];
+        } else if (self.execute_step_results_loop) {
+            return results[call_idx % results.len];
+        } else {
+            @panic("execute_step called more times than available outcomes");
+        }
     }
     return StepOutcome{
         .result = StepResult{
@@ -131,16 +142,36 @@ fn execute_step_streaming(
     callback_context: ?*anyopaque,
 ) Provider.ProviderError!StepOutcome {
     const self: *MockProvider = @ptrCast(@alignCast(ptr));
-    _ = callback;
-    _ = callback_context;
     self.execute_step_streaming_calls += 1;
     self.last_allocator = allocator;
     self.last_session_config = session_config;
     self.last_input = input;
     self.last_previous_step = previous_step;
-    if (self.execute_step_result) |res| {
-        const ok = try res;
-        return StepOutcome{ .result = ok, .continuation = self.execute_step_continuation.? };
+    if (self.execute_step_streaming_chunks) |chunks_list| {
+        if (chunks_list.len > 0) {
+            const call_idx = self.execute_step_streaming_calls - 1;
+            const idx = if (self.execute_step_results_loop) call_idx % chunks_list.len else call_idx;
+            if (idx < chunks_list.len) {
+                for (chunks_list[idx]) |chunk| {
+                    callback(callback_context, chunk);
+                }
+            } else {
+                @panic("execute_step_streaming called more times than available streaming chunks");
+            }
+        }
+    }
+    if (self.execute_step_results) |results| {
+        if (results.len == 0) {
+            @panic("execute_step_results is empty");
+        }
+        const call_idx = self.execute_step_streaming_calls - 1;
+        if (call_idx < results.len) {
+            return results[call_idx];
+        } else if (self.execute_step_results_loop) {
+            return results[call_idx % results.len];
+        } else {
+            @panic("execute_step_streaming called more times than available outcomes");
+        }
     }
     return StepOutcome{
         .result = StepResult{
@@ -160,13 +191,34 @@ fn deinit(ptr: *anyopaque) void {
     self.deinit_calls += 1;
 }
 
-pub const MockStepContinuation = struct {
-    pub fn stepContinuation(self: *MockStepContinuation) StepContinuation {
-        return .{
-            .ptr = self,
-            .vtable = &.{
-                .deinit = dummyDeinit,
-            },
-        };
-    }
-};
+/// Helper constructor to create a mock `StepResult` with standard mock vtable.
+pub fn stepResult(
+    model_output: []const types.ModelOutput,
+    thoughts: []const types.Thought,
+    tool_calls: []const types.ToolCall,
+) StepResult {
+    return .{
+        .model_output = model_output,
+        .thoughts = thoughts,
+        .tool_calls = tool_calls,
+        .ptr = @constCast(&mock_step_vtable),
+        .vtable = &mock_step_vtable,
+    };
+}
+
+/// Helper constructor to create a mock `StepContinuation` with standard mock vtable.
+pub fn stepContinuation() StepContinuation {
+    return .{
+        .ptr = @constCast(&mock_continuation_vtable),
+        .vtable = &mock_continuation_vtable,
+    };
+}
+
+/// Helper constructor to create a mock `ListModelsResult` with standard mock vtable.
+pub fn listModelsResult(models: []const types.Model) ListModelsResult {
+    return .{
+        .models = models,
+        .ptr = @constCast(&mock_list_models_vtable),
+        .vtable = &mock_list_models_vtable,
+    };
+}

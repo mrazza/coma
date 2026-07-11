@@ -190,13 +190,18 @@ fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*Strea
     }
 }
 
-const testing_pkg = @import("testing");
-var test_mock_provider: ?*testing_pkg.MockProvider = null;
+const testing = @import("testing");
+
+const MockToolImpl = struct {
+    pub fn execute(allocator: std.mem.Allocator, val: i64) ![]const u8 {
+        return try std.fmt.allocPrint(allocator, "Tool result for {d}", .{val});
+    }
+};
 
 test "Agent.executeTurn - no tool calls" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    var mock_provider = testing_pkg.MockProvider{};
+    var mock_provider = testing.MockProvider{};
     const prov = mock_provider.provider();
 
     const mock_model = llm.types.Model{
@@ -217,15 +222,11 @@ test "Agent.executeTurn - no tool calls" {
     };
     defer agent.deinit();
 
-    mock_provider.execute_step_result = llm.types.StepResult{
-        .model_output = &.{.{ .text = "Hello user!" }},
-        .thoughts = &.{},
-        .tool_calls = &.{},
-        .ptr = &mock_provider,
-        .vtable = &testing_pkg.MockProvider.mock_step_vtable,
+    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello user!" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
     };
-    var mock_continuation: testing_pkg.MockProvider.MockStepContinuation = .{};
-    mock_provider.execute_step_continuation = mock_continuation.stepContinuation();
+    mock_provider.execute_step_results = &outcomes;
 
     const turn = types.Turn{ .prompt = "Hi agent" };
 
@@ -240,7 +241,7 @@ test "Agent.executeTurn - no tool calls" {
 test "Agent.executeTurnStreaming - no tool calls" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    var mock_provider = testing_pkg.MockProvider{};
+    var mock_provider = testing.MockProvider{};
     const prov = mock_provider.provider();
 
     const mock_model = llm.types.Model{
@@ -260,15 +261,11 @@ test "Agent.executeTurnStreaming - no tool calls" {
     );
     defer agent.deinit();
 
-    mock_provider.execute_step_result = llm.types.StepResult{
-        .model_output = &.{.{ .text = "Hello user!" }},
-        .thoughts = &.{},
-        .tool_calls = &.{},
-        .ptr = &mock_provider,
-        .vtable = &testing_pkg.MockProvider.mock_step_vtable,
+    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello user!" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
     };
-    var mock_continuation: testing_pkg.MockProvider.MockStepContinuation = .{};
-    mock_provider.execute_step_continuation = mock_continuation.stepContinuation();
+    mock_provider.execute_step_results = &outcomes;
 
     const turn = types.Turn{ .prompt = "Hi agent" };
 
@@ -294,28 +291,11 @@ test "Agent.executeTurnStreaming - no tool calls" {
     try std.testing.expectEqualStrings("Hello user!", result.final_step.model_output[0].text);
 }
 
-const MockToolImpl = struct {
-    pub fn execute(allocator: std.mem.Allocator, val: i64) ![]const u8 {
-        if (test_mock_provider) |mp| {
-            mp.execute_step_result = llm.types.StepResult{
-                .model_output = &.{.{ .text = "Final output after tool" }},
-                .thoughts = &.{},
-                .tool_calls = &.{},
-                .ptr = mp,
-                .vtable = &testing_pkg.MockProvider.mock_step_vtable,
-            };
-        }
-        return try std.fmt.allocPrint(allocator, "Tool result for {d}", .{val});
-    }
-};
-
 test "Agent.executeTurn - executes tool call and runs again" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    var mock_provider = testing_pkg.MockProvider{};
+    var mock_provider = testing.MockProvider{};
     const prov = mock_provider.provider();
-    test_mock_provider = &mock_provider;
-    defer test_mock_provider = null;
 
     const tool_desc = llm.types.Tool{
         .name = "mock_tool",
@@ -361,17 +341,21 @@ test "Agent.executeTurn - executes tool call and runs again" {
         },
     };
 
-    mock_provider.execute_step_result = llm.types.StepResult{
-        .model_output = &.{},
-        .thoughts = &.{},
-        .tool_calls = &tool_calls,
-        .ptr = &mock_provider,
-        .vtable = &testing_pkg.MockProvider.mock_step_vtable,
+    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    const continuation1 = testing.MockProvider.stepContinuation();
+
+    const final_outputs = [_]llm.types.ModelOutput{
+        .{ .text = "Final output after tool" },
     };
-    mock_provider.execute_step_continuation = llm.types.StepContinuation{
-        .ptr = &mock_provider,
-        .vtable = &testing_pkg.MockProvider.mock_continuation_vtable,
+    const result2 = testing.MockProvider.stepResult(&final_outputs, &.{}, &.{});
+    const continuation2 = testing.MockProvider.stepContinuation();
+
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        llm.types.StepOutcome{ .result = result1, .continuation = continuation1 },
+        llm.types.StepOutcome{ .result = result2, .continuation = continuation2 },
     };
+    mock_provider.execute_step_results = &outcomes;
+
 
     const turn = types.Turn{ .prompt = "Hi agent, run mock_tool" };
 
@@ -386,81 +370,8 @@ test "Agent.executeTurn - executes tool call and runs again" {
 test "Agent.executeTurnStreaming - model chunks streaming" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-
-    const CustomStreamingProvider = struct {
-        fn execute_step_streaming(
-            ptr: *anyopaque,
-            alloc: std.mem.Allocator,
-            session_config: llm.types.SessionConfig,
-            input: []const llm.types.Step,
-            previous_step: ?llm.types.StepContinuation,
-            callback: llm.types.StreamingCallback,
-            callback_context: ?*anyopaque,
-        ) llm.Provider.ProviderError!llm.types.StepOutcome {
-            _ = alloc;
-            _ = session_config;
-            _ = input;
-            _ = previous_step;
-
-            const chunk1 = llm.types.StreamingChunk{
-                .event = .{
-                    .step_event = .{
-                        .index = 0,
-                        .event = .{
-                            .delta = .{
-                                .model_output = .{ .text = "Hello " },
-                            },
-                        },
-                    },
-                },
-            };
-            const chunk2 = llm.types.StreamingChunk{
-                .event = .{
-                    .step_event = .{
-                        .index = 0,
-                        .event = .{
-                            .delta = .{
-                                .model_output = .{ .text = "world!" },
-                            },
-                        },
-                    },
-                },
-            };
-
-            callback(callback_context, chunk1);
-            callback(callback_context, chunk2);
-
-            return llm.types.StepOutcome{
-                .result = llm.types.StepResult{
-                    .model_output = &.{.{ .text = "Hello world!" }},
-                    .thoughts = &.{},
-                    .tool_calls = &.{},
-                    .ptr = ptr,
-                    .vtable = &testing_pkg.MockProvider.mock_step_vtable,
-                },
-                .continuation = llm.types.StepContinuation{
-                    .ptr = ptr,
-                    .vtable = &testing_pkg.MockProvider.mock_continuation_vtable,
-                },
-            };
-        }
-    };
-
-    var custom_vtable = llm.Provider.VTable{
-        .list_models = undefined,
-        .execute_step = undefined,
-        .execute_step_streaming = CustomStreamingProvider.execute_step_streaming,
-        .deinit = struct {
-            fn deinit(ptr: *anyopaque) void {
-                _ = ptr;
-            }
-        }.deinit,
-    };
-
-    const prov = llm.Provider{
-        .ptr = undefined,
-        .vtable = &custom_vtable,
-    };
+    var mock_provider = testing.MockProvider{};
+    const prov = mock_provider.provider();
 
     var agent = Agent.init(
         allocator,
@@ -473,6 +384,41 @@ test "Agent.executeTurnStreaming - model chunks streaming" {
         },
     );
     defer agent.deinit();
+
+    const chunk1 = llm.types.StreamingChunk{
+        .event = .{
+            .step_event = .{
+                .index = 0,
+                .event = .{
+                    .delta = .{
+                        .model_output = .{ .text = "Hello " },
+                    },
+                },
+            },
+        },
+    };
+    const chunk2 = llm.types.StreamingChunk{
+        .event = .{
+            .step_event = .{
+                .index = 0,
+                .event = .{
+                    .delta = .{
+                        .model_output = .{ .text = "world!" },
+                    },
+                },
+            },
+        },
+    };
+
+    const chunks = [_]llm.types.StreamingChunk{ chunk1, chunk2 };
+    const chunks_list = [_][]const llm.types.StreamingChunk{ &chunks };
+    mock_provider.execute_step_streaming_chunks = &chunks_list;
+
+    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello world!" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
+    };
+    mock_provider.execute_step_results = &outcomes;
 
     const CallbackState = struct {
         const Self = @This();
@@ -510,87 +456,27 @@ test "Agent.executeTurnStreaming - with tool calls" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const CustomStreamingProvider = struct {
-        const Self = @This();
-        calls: usize = 0,
+    var mock_provider = testing.MockProvider{};
+    const prov = mock_provider.provider();
 
-        var args_buf = [_]llm.types.Argument{
-            .{ .name = "val", .value = .{ .integer = 42 } },
-        };
-        var tool_calls_buf = [_]llm.types.ToolCall{
-            .{
-                .id = "call-id-123",
-                .name = "mock_tool",
-                .arguments = &args_buf,
-            },
-        };
-
-        fn execute_step_streaming(
-            ptr: *anyopaque,
-            alloc: std.mem.Allocator,
-            session_config: llm.types.SessionConfig,
-            input: []const llm.types.Step,
-            previous_step: ?llm.types.StepContinuation,
-            callback: llm.types.StreamingCallback,
-            callback_context: ?*anyopaque,
-        ) llm.Provider.ProviderError!llm.types.StepOutcome {
-            const self: *Self = @ptrCast(@alignCast(ptr));
-            self.calls += 1;
-            _ = callback;
-            _ = callback_context;
-            _ = alloc;
-            _ = session_config;
-            _ = input;
-            _ = previous_step;
-
-            if (self.calls == 1) {
-                return llm.types.StepOutcome{
-                    .result = llm.types.StepResult{
-                        .model_output = &.{},
-                        .thoughts = &.{},
-                        .tool_calls = &tool_calls_buf,
-                        .ptr = ptr,
-                        .vtable = &testing_pkg.MockProvider.mock_step_vtable,
-                    },
-                    .continuation = llm.types.StepContinuation{
-                        .ptr = ptr,
-                        .vtable = &testing_pkg.MockProvider.mock_continuation_vtable,
-                    },
-                };
-            } else {
-                return llm.types.StepOutcome{
-                    .result = llm.types.StepResult{
-                        .model_output = &.{.{ .text = "Tool executed!" }},
-                        .thoughts = &.{},
-                        .tool_calls = &.{},
-                        .ptr = ptr,
-                        .vtable = &testing_pkg.MockProvider.mock_step_vtable,
-                    },
-                    .continuation = llm.types.StepContinuation{
-                        .ptr = ptr,
-                        .vtable = &testing_pkg.MockProvider.mock_continuation_vtable,
-                    },
-                };
-            }
-        }
+    const args_buf = [_]llm.types.Argument{
+        .{ .name = "val", .value = .{ .integer = 42 } },
+    };
+    const tool_calls_buf = [_]llm.types.ToolCall{
+        .{
+            .id = "call-id-123",
+            .name = "mock_tool",
+            .arguments = @constCast(&args_buf),
+        },
     };
 
-    var custom_prov_impl = CustomStreamingProvider{};
-    var custom_vtable = llm.Provider.VTable{
-        .list_models = undefined,
-        .execute_step = undefined,
-        .execute_step_streaming = CustomStreamingProvider.execute_step_streaming,
-        .deinit = struct {
-            fn deinit(ptr: *anyopaque) void {
-                _ = ptr;
-            }
-        }.deinit,
+    const step_result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls_buf);
+    const step_result2 = testing.MockProvider.stepResult(&.{.{ .text = "Tool executed!" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = step_result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = step_result2, .continuation = testing.MockProvider.stepContinuation() },
     };
-
-    const prov = llm.Provider{
-        .ptr = &custom_prov_impl,
-        .vtable = &custom_vtable,
-    };
+    mock_provider.execute_step_results = &outcomes;
 
     const tool_desc = llm.types.Tool{
         .name = "mock_tool",
@@ -655,7 +541,7 @@ test "Agent.executeTurnStreaming - with tool calls" {
 test "Agent.executeToolCall - tool not found" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    var mock_provider = testing_pkg.MockProvider{};
+    var mock_provider = testing.MockProvider{};
     const prov = mock_provider.provider();
 
     var agent = Agent.init(
@@ -682,7 +568,7 @@ test "Agent.executeToolCall - tool not found" {
 test "Agent.executeTurn - tool call error cleanup" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    var mock_provider = testing_pkg.MockProvider{};
+    var mock_provider = testing.MockProvider{};
     const prov = mock_provider.provider();
 
     const tool_desc = llm.types.Tool{
@@ -718,17 +604,13 @@ test "Agent.executeTurn - tool call error cleanup" {
             .arguments = &.{},
         },
     };
-    mock_provider.execute_step_result = llm.types.StepResult{
-        .model_output = &.{},
-        .thoughts = &.{},
-        .tool_calls = &tool_calls,
-        .ptr = &mock_provider,
-        .vtable = &testing_pkg.MockProvider.mock_step_vtable,
+    const step_result = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    const step_continuation = testing.MockProvider.stepContinuation();
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = step_result, .continuation = step_continuation },
     };
-    mock_provider.execute_step_continuation = llm.types.StepContinuation{
-        .ptr = &mock_provider,
-        .vtable = &testing_pkg.MockProvider.mock_continuation_vtable,
-    };
+    mock_provider.execute_step_results = &outcomes;
+
 
     const turn = types.Turn{ .prompt = "Run error_tool" };
     try std.testing.expectError(error.ArgumentTypeMismatch, agent.executeTurn(turn));
