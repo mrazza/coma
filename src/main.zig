@@ -118,65 +118,72 @@ fn printMarkdown(stream_ctx: *StreamContext, text: []const u8) void {
     }
 }
 
-fn streamCallback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+fn streamCallback(ctx: ?*anyopaque, agent_chunk: agent_pkg.types.StreamingChunk) void {
     const stream_ctx: *StreamContext = @ptrCast(@alignCast(ctx));
-    switch (chunk.event) {
-        .interaction_created => {},
-        .step_event => |step_ev| {
-            switch (step_ev.event) {
-                .start => |start_payload| {
-                    switch (start_payload) {
-                        .thought => {
-                            if (stream_ctx.current_type != .thought) {
-                                std.debug.print("{s}Thinking...{s}\n", .{ color_gray, color_reset });
-                                stream_ctx.current_type = .thought;
-                            }
-                        },
-                        .model_output => {
-                            if (stream_ctx.current_type != .model_output) {
-                                std.debug.print("\n{s}Agent >{s} ", .{ color_cyan ++ color_bold, color_reset });
-                                stream_ctx.current_type = .model_output;
-                            }
-                        },
-                        .tool_call => |tc| {
-                            if (stream_ctx.current_type != .tool_call) {
-                                std.debug.print("\n{s}[Tool Call: {s}]{s}\n", .{ color_yellow, tc.name, color_reset });
-                                stream_ctx.current_type = .tool_call;
-                            }
-                        },
-                    }
-                },
-                .delta => |delta| {
-                    switch (delta) {
-                        .thought => |thought| {
-                            if (stream_ctx.current_type != .thought) {
-                                std.debug.print("{s}Thinking...{s}\n", .{ color_gray, color_reset });
-                                stream_ctx.current_type = .thought;
-                            }
-                            printMarkdown(stream_ctx, thought.text);
-                        },
-                        .model_output => |mo| {
-                            if (stream_ctx.current_type != .model_output) {
-                                std.debug.print("\n{s}Agent >{s} ", .{ color_cyan ++ color_bold, color_reset });
-                                stream_ctx.current_type = .model_output;
-                            }
-                            switch (mo) {
-                                .text => |text| {
-                                    printMarkdown(stream_ctx, text);
+    switch (agent_chunk) {
+        .model_chunk => |chunk| {
+            switch (chunk.event) {
+                .interaction_created => {},
+                .step_event => |step_ev| {
+                    switch (step_ev.event) {
+                        .start => |start_payload| {
+                            switch (start_payload) {
+                                .thought => {
+                                    if (stream_ctx.current_type != .thought) {
+                                        std.debug.print("{s}Thinking...{s}\n", .{ color_gray, color_reset });
+                                        stream_ctx.current_type = .thought;
+                                    }
+                                },
+                                .model_output => {
+                                    if (stream_ctx.current_type != .model_output) {
+                                        std.debug.print("\n{s}Agent >{s} ", .{ color_cyan ++ color_bold, color_reset });
+                                        stream_ctx.current_type = .model_output;
+                                    }
+                                },
+                                .tool_call => |tc| {
+                                    if (stream_ctx.current_type != .tool_call) {
+                                        std.debug.print("\n{s}[Tool Call: {s}]{s}\n", .{ color_yellow, tc.name, color_reset });
+                                        stream_ctx.current_type = .tool_call;
+                                    }
                                 },
                             }
                         },
-                        .tool_call => |args| {
-                            _ = args;
+                        .delta => |delta| {
+                            switch (delta) {
+                                .thought => |thought| {
+                                    if (stream_ctx.current_type != .thought) {
+                                        std.debug.print("{s}Thinking...{s}\n", .{ color_gray, color_reset });
+                                        stream_ctx.current_type = .thought;
+                                    }
+                                    printMarkdown(stream_ctx, thought.text);
+                                },
+                                .model_output => |mo| {
+                                    if (stream_ctx.current_type != .model_output) {
+                                        std.debug.print("\n{s}Agent >{s} ", .{ color_cyan ++ color_bold, color_reset });
+                                        stream_ctx.current_type = .model_output;
+                                    }
+                                    switch (mo) {
+                                        .text => |text| {
+                                            printMarkdown(stream_ctx, text);
+                                        },
+                                    }
+                                },
+                                .tool_call => |args| {
+                                    _ = args;
+                                },
+                            }
                         },
+                        .end => {},
                     }
                 },
-                .end => {},
+                .interaction_completed => {
+                    flushBackticks(stream_ctx);
+                    flushAsterisks(stream_ctx);
+                },
             }
         },
-        .interaction_completed => {
-            flushBackticks(stream_ctx);
-            flushAsterisks(stream_ctx);
+        .tool_result => |tr| {
+            std.debug.print("{s}Output:{s}\n{s}", .{ color_green, color_reset, tr.result });
         },
     }
 }
@@ -243,19 +250,15 @@ fn executeTypescript(allocator: std.mem.Allocator, code: []const u8) ![]const u8
         return try allocator.dupe(u8, "Error: process did not exit cleanly");
     }
 
-    std.debug.print("{s}Output:{s}\n{s}", .{ color_green, color_reset, result.stdout });
     return result.stdout;
 }
 
 fn getWeather(allocator: std.mem.Allocator, zip_code: i64) ![]const u8 {
-    std.debug.print("\n{s}Executing get_weather for zip code {}...{s}\n", .{ color_yellow, zip_code, color_reset });
-
     const result_str = if (zip_code == 7302)
         try allocator.dupe(u8, "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph")
     else
         try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip_code});
 
-    std.debug.print("{s}Output:{s}\n{s}\n", .{ color_green, color_reset, result_str });
     return result_str;
 }
 
