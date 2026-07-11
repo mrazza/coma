@@ -1,7 +1,16 @@
 const std = @import("std");
 const llm = @import("llm");
+const Tool = @import("Tool.zig");
 
 const Allocator = std.mem.Allocator;
+
+/// Configuration for initializing an Agent.
+pub const AgentConfig = struct {
+    /// The LLM model to be used by the Agent.
+    model: llm.types.Model,
+    /// A list of executable tools available for the Agent to use.
+    tools: []const Tool = &.{},
+};
 
 /// Represents the input to start a single execution turn for the Agent.
 pub const Turn = struct {

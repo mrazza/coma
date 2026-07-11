@@ -25,15 +25,23 @@ pub const AgentError = ToolError || Provider.ProviderError;
 /// `allocator` is used for all internal dynamic memory allocations.
 /// `io` is the I/O context to use for operations.
 /// `provider` is a Provider interface implementation that determines the LLM provider to use.
-/// `tools` is the set of tools available for the agent to execute.
-/// `session_config` contains the initial configuration for the LLM session.
-pub fn init(allocator: Allocator, io: Io, provider: Provider, tools: []const Tool, session_config: llm.types.SessionConfig) Agent {
+/// `config` contains the configuration for the Agent.
+pub fn init(allocator: Allocator, io: Io, provider: Provider, config: types.AgentConfig) !Agent {
+    const descriptors = try allocator.alloc(llm.types.Tool, config.tools.len);
+    errdefer allocator.free(descriptors);
+    for (config.tools, 0..) |tool, i| {
+        descriptors[i] = tool.descriptor;
+    }
+
     return Agent{
         .allocator = allocator,
         .io = io,
         .provider = provider,
-        .tools = tools,
-        .session_config = session_config,
+        .tools = config.tools,
+        .session_config = .{
+            .model = config.model,
+            .tools = descriptors,
+        },
         .prev_continuation = null,
     };
 }
@@ -44,6 +52,7 @@ pub fn deinit(self: *Agent) void {
         ls.deinit();
         self.prev_continuation = null;
     }
+    self.allocator.free(self.session_config.tools);
 }
 
 /// Executes a single non-streaming turn of the agent.
@@ -209,17 +218,10 @@ test "Agent.executeTurn - no tool calls" {
         .display_name = "Mock Model",
     };
 
-    var agent = Agent{
-        .allocator = allocator,
-        .io = io,
-        .provider = prov,
+    var agent = try Agent.init(allocator, io, prov, .{
+        .model = mock_model,
         .tools = &.{},
-        .session_config = .{
-            .model = mock_model,
-            .tools = &.{},
-        },
-        .prev_continuation = null,
-    };
+    });
     defer agent.deinit();
 
     const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello user!" }}, &.{}, &.{});
@@ -249,11 +251,10 @@ test "Agent.executeTurnStreaming - no tool calls" {
         .display_name = "Mock Model",
     };
 
-    var agent: Agent = .init(
+    var agent: Agent = try .init(
         allocator,
         io,
         prov,
-        &.{},
         .{
             .model = mock_model,
             .tools = &.{},
@@ -318,14 +319,13 @@ test "Agent.executeTurn - executes tool call and runs again" {
         .display_name = "Mock Model",
     };
 
-    var agent: Agent = .init(
+    var agent: Agent = try .init(
         allocator,
         io,
         prov,
-        tools,
         .{
             .model = mock_model,
-            .tools = &.{tool.descriptor},
+            .tools = tools,
         },
     );
     defer agent.deinit();
@@ -373,11 +373,10 @@ test "Agent.executeTurnStreaming - model chunks streaming" {
     var mock_provider = testing.MockProvider{};
     const prov = mock_provider.provider();
 
-    var agent = Agent.init(
+    var agent = try Agent.init(
         allocator,
         io,
         prov,
-        &.{},
         .{
             .model = .{ .id = "mock-model", .display_name = "Mock Model" },
             .tools = &.{},
@@ -493,14 +492,13 @@ test "Agent.executeTurnStreaming - with tool calls" {
     const tool = Tool.init(tool_desc, MockToolImpl.execute);
     const tools = &[_]Tool{tool};
 
-    var agent = Agent.init(
+    var agent = try Agent.init(
         allocator,
         io,
         prov,
-        tools,
         .{
             .model = .{ .id = "mock-model", .display_name = "Mock Model" },
-            .tools = &.{tool_desc},
+            .tools = tools,
         },
     );
     defer agent.deinit();
@@ -544,11 +542,10 @@ test "Agent.executeToolCall - tool not found" {
     var mock_provider = testing.MockProvider{};
     const prov = mock_provider.provider();
 
-    var agent = Agent.init(
+    var agent = try Agent.init(
         allocator,
         io,
         prov,
-        &.{},
         .{
             .model = .{ .id = "mock-model", .display_name = "Mock Model" },
             .tools = &.{},
@@ -585,14 +582,13 @@ test "Agent.executeTurn - tool call error cleanup" {
     const tool = Tool.init(tool_desc, error_tool_impl.execute);
     const tools = &[_]Tool{tool};
 
-    var agent = Agent.init(
+    var agent = try Agent.init(
         allocator,
         io,
         prov,
-        tools,
         .{
             .model = .{ .id = "mock-model", .display_name = "Mock Model" },
-            .tools = &.{tool_desc},
+            .tools = tools,
         },
     );
     defer agent.deinit();

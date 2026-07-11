@@ -320,15 +320,12 @@ pub fn main(init: std.process.Init) !void {
         }, getWeather),
     };
 
-    const session_config: llm.types.SessionConfig = .{
+    const agent_config: types.AgentConfig = .{
         .model = selected_model.?,
-        .tools = &.{
-            tools[0].descriptor,
-            tools[1].descriptor,
-        },
+        .tools = tools,
     };
 
-    var agent: Agent = .init(allocator, io, client, tools, session_config);
+    var agent: Agent = try .init(allocator, io, client, agent_config);
     defer agent.deinit();
 
     std.debug.print(
