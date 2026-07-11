@@ -299,35 +299,31 @@ pub fn main(init: std.process.Init) !void {
         }
     } else unreachable;
 
-    const execute_typescript_desc = llm.types.Tool{
-        .name = "execute_typescript",
-        .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
-        .parameters = &.{
-            .{
-                .name = "code",
-                .type = .string,
-                .required = true,
-                .description = "The typescript code to execute.",
-            },
-        },
-    };
-
-    const get_weather_desc = llm.types.Tool{
-        .name = "get_weather",
-        .description = "Get the current weather for a given zip code.",
-        .parameters = &.{
-            .{
-                .name = "zip_code",
-                .type = .integer,
-                .required = true,
-                .description = "The 5-digit zip code to get the weather for.",
-            },
-        },
-    };
-
     const tools = &[_]Tool{
-        Tool.init(execute_typescript_desc, executeTypescript),
-        Tool.init(get_weather_desc, getWeather),
+        Tool.init(.{
+            .name = "execute_typescript",
+            .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
+            .parameters = &.{
+                .{
+                    .name = "code",
+                    .type = .string,
+                    .required = true,
+                    .description = "The typescript code to execute.",
+                },
+            },
+        }, executeTypescript),
+        Tool.init(.{
+            .name = "get_weather",
+            .description = "Get the current weather for a given zip code.",
+            .parameters = &.{
+                .{
+                    .name = "zip_code",
+                    .type = .integer,
+                    .required = true,
+                    .description = "The 5-digit zip code to get the weather for.",
+                },
+            },
+        }, getWeather),
     };
 
     const session_config: llm.types.SessionConfig = .{
