@@ -124,16 +124,24 @@ fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*Strea
                 return err;
             };
 
-            const tool_futures: []Future(ToolError!llm.types.ToolResult) = try allocator.alloc(Future(ToolError!llm.types.ToolResult), step_result.tool_calls.len);
-            defer allocator.free(tool_futures);
-            defer for (tool_futures) |*tf| {
-                _ = tf.cancel(io) catch {};
+            const SingleToolResult = union(enum) { result: ToolError!llm.types.ToolResult };
+            const tool_futures_buf: []SingleToolResult = try allocator.alloc(SingleToolResult, step_result.tool_calls.len);
+            defer allocator.free(tool_futures_buf);
+            var tool_futures = Io.Select(SingleToolResult).init(io, tool_futures_buf);
+            defer while (tool_futures.cancel()) |tool_result| {
+                var curr_result = tool_result;
+                if (curr_result.result) |*tr| {
+                    tr.deinit();
+                } else |_| {}
             };
-            for (step_result.tool_calls, 0..) |tool_call, call_idx| {
-                tool_futures[call_idx] = io.async(executeToolCall, .{ self, tool_call });
+            for (step_result.tool_calls) |tool_call| {
+                tool_futures.async(.result, executeToolCall, .{ self, tool_call });
             }
-            for (tool_futures) |*tf| {
-                var tool_result = try tf.await(io);
+            for (0..step_result.tool_calls.len) |_| {
+                const tool_result_wrapper = tool_futures.await() catch |err| switch (err) {
+                    error.Canceled => unreachable,
+                };
+                var tool_result = try tool_result_wrapper.result;
                 intermediate_results.append(allocator, .{ .tool_result = tool_result }) catch |err| {
                     tool_result.deinit();
                     return err;
