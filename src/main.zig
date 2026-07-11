@@ -166,14 +166,13 @@ fn streamCallback(ctx: ?*anyopaque, agent_chunk: agent_pkg.types.StreamingChunk)
                                         },
                                     }
                                 },
-                                .tool_call => |args| {
-                                    for (args) |arg| {
-                                        // TODO(razza): Add tool call ID here.
+                                .tool_call => |dt| {
+                                    for (dt.arguments) |arg| {
                                         switch (arg.value) {
-                                            .string => |s| std.debug.print("  {s}: \"{s}\"\n", .{ arg.name, s }),
-                                            .integer => |i| std.debug.print("  {s}: {}\n", .{ arg.name, i }),
-                                            .float => |f| std.debug.print("  {s}: {d}\n", .{ arg.name, f }),
-                                            .boolean => |b| std.debug.print("  {s}: {}\n", .{ arg.name, b }),
+                                            .string => |s| std.debug.print("  {s}({s}): \"{s}\"\n", .{ dt.id, arg.name, s }),
+                                            .integer => |i| std.debug.print("  {s}({s}): {}\n", .{ dt.id, arg.name, i }),
+                                            .float => |f| std.debug.print("  {s}({s}): {d}\n", .{ dt.id, arg.name, f }),
+                                            .boolean => |b| std.debug.print("  {s}({s}): {}\n", .{ dt.id, arg.name, b }),
                                         }
                                     }
                                 },

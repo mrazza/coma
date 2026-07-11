@@ -242,6 +242,22 @@ pub const StepStartPayload = union(enum) {
     tool_call: ToolCallStart,
 };
 
+/// The incremental argument update payload for a tool call.
+pub const ToolCallDelta = struct {
+    /// The unique ID of the tool call.
+    ///
+    /// This is provided for convience and is not part of the delta. It is included to make it
+    /// easier to track which arguments belong to which tool call.
+    id: []const u8,
+    /// The name of the tool.
+    ///
+    /// This is provided for convience and is not part of the delta. It is included to make it
+    /// easier to track which arguments belong to which tool call.
+    name: []const u8,
+    /// The arguments delta for tool call parameters, represented as well-typed parsed arguments.
+    arguments: []const Argument,
+};
+
 /// The incremental update payload.
 pub const Delta = union(enum) {
     /// Text content delta from the model output.
@@ -249,7 +265,7 @@ pub const Delta = union(enum) {
     /// Thought content delta from the model's reasoning.
     thought: Thought,
     /// Arguments delta for tool call parameters, represented as well-typed parsed arguments.
-    tool_call: []const Argument,
+    tool_call: ToolCallDelta,
 };
 
 /// Payload for a step event in a streaming response.

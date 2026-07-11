@@ -155,16 +155,13 @@ pub fn toStepStartPayload(step: api.Step) llm.types.StepStartPayload {
     };
 }
 
-/// Converts a Gemini API step delta into a generic delta.
-/// For tool calls, the parsed arguments must be provided.
+/// Converts a Gemini API step delta containing model or thought output into a generic delta.
 ///
 /// Returns null if no interesting or reasonable `Delta` object can be constructed. For example,
 /// if a tool call delta is received but no arguments have been provided yet.
-pub fn toDelta(delta: api.InteractionStepDelta, arguments: []const llm.types.Argument) ?llm.types.Delta {
+pub fn toDelta(delta: api.InteractionStepDelta) ?llm.types.Delta {
     return switch (delta) {
-        .arguments_delta => if (arguments.len > 0) .{
-            .tool_call = arguments,
-        } else null,
+        .arguments_delta => unreachable,
         .text_delta => |td| .{
             .model_output = .{
                 .text = td.text orelse "",
@@ -175,6 +172,24 @@ pub fn toDelta(delta: api.InteractionStepDelta, arguments: []const llm.types.Arg
                 .text = ts.content.text orelse "",
             },
         },
+    };
+}
+
+/// Converts a Gemini API step delta containing a tool argument delta into a generic delta.
+///
+/// Returns null if no interesting or reasonable `Delta` object can be constructed. For example,
+/// if a tool call delta is received but no arguments have been provided yet.
+pub fn toToolDelta(delta: api.InteractionStepDelta, tool_id: []const u8, tool_name: []const u8, arguments: []const llm.types.Argument) ?llm.types.Delta {
+    return switch (delta) {
+        .arguments_delta => if (arguments.len > 0) .{
+            .tool_call = .{
+                .id = tool_id,
+                .name = tool_name,
+                .arguments = arguments,
+            },
+        } else null,
+        .text_delta => unreachable,
+        .thought_summary => unreachable,
     };
 }
 
@@ -505,14 +520,16 @@ test toDelta {
     const arg_delta = api.InteractionStepDelta{
         .arguments_delta = .{ .arguments = "foo" },
     };
-    const delta1 = toDelta(arg_delta, arguments);
+    const delta1 = toToolDelta(arg_delta, "call_id", "func_name", arguments);
     try std.testing.expect(delta1.? == .tool_call);
-    try std.testing.expectEqualStrings("arg1", delta1.?.tool_call[0].name);
+    try std.testing.expectEqualStrings("call_id", delta1.?.tool_call.id);
+    try std.testing.expectEqualStrings("func_name", delta1.?.tool_call.name);
+    try std.testing.expectEqualStrings("arg1", delta1.?.tool_call.arguments[0].name);
 
     const text_delta = api.InteractionStepDelta{
         .text_delta = .{ .type = .text, .text = "hello" },
     };
-    const delta2 = toDelta(text_delta, &.{});
+    const delta2 = toDelta(text_delta);
     try std.testing.expect(delta2.? == .model_output);
     try std.testing.expectEqualStrings("hello", delta2.?.model_output.text);
 
@@ -521,7 +538,7 @@ test toDelta {
             .content = .{ .type = .text, .text = "thinking" },
         },
     };
-    const delta3 = toDelta(thought_delta, &.{});
+    const delta3 = toDelta(thought_delta);
     try std.testing.expect(delta3.? == .thought);
     try std.testing.expectEqualStrings("thinking", delta3.?.thought.text);
 }
@@ -590,11 +607,11 @@ test toModels {
     try std.testing.expectEqualStrings("Gemini Model", generic_models[0].display_name);
 }
 
-test "toDelta with empty arguments_delta" {
+test "toToolDelta with empty arguments_delta" {
     const arg_delta = api.InteractionStepDelta{
         .arguments_delta = .{ .arguments = "foo" },
     };
-    const delta = toDelta(arg_delta, &.{});
+    const delta = toToolDelta(arg_delta, "call_id", "func_name", &.{});
     try std.testing.expect(delta == null);
 }
 
