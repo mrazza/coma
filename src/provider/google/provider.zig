@@ -296,7 +296,11 @@ fn MakeProvider(comptime ClientType: type) type {
                                 arguments = args;
                             }
                         }
-                        const delta_payload = converter.toDelta(e.delta, arguments);
+                        const delta_payload = switch (e.delta) {
+                            .arguments_delta => converter.toToolDelta(e.delta, acc.tool_call.id, acc.tool_call.name, arguments),
+                            .text_delta => converter.toDelta(e.delta),
+                            .thought_summary => converter.toDelta(e.delta),
+                        };
 
                         if (delta_payload) |payload| {
                             callback(callback_context, .{
@@ -979,10 +983,10 @@ test "Gemini.executeStepStreaming success" {
                                 .thought => |t| {
                                     self.thought_text.writer.writeAll(t.text) catch {};
                                 },
-                                .tool_call => |args| {
-                                    if (args.len > 0) {
-                                        std.testing.expectEqualStrings("location", args[0].name) catch {};
-                                        if (std.mem.eql(u8, args[0].value.string, "San Francisco")) {
+                                .tool_call => |tc| {
+                                    if (tc.arguments.len > 0) {
+                                        std.testing.expectEqualStrings("location", tc.arguments[0].name) catch {};
+                                        if (std.mem.eql(u8, tc.arguments[0].value.string, "San Francisco")) {
                                             self.tool_call_arguments_received = true;
                                         }
                                     }
@@ -1142,10 +1146,10 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
                                 .thought => |t| {
                                     self.thought_text.writer.writeAll(t.text) catch {};
                                 },
-                                .tool_call => |args| {
-                                    if (args.len > 0) {
-                                        std.testing.expectEqualStrings("location", args[0].name) catch {};
-                                        if (std.mem.eql(u8, args[0].value.string, "San Francisco")) {
+                                .tool_call => |tc| {
+                                    if (tc.arguments.len > 0) {
+                                        std.testing.expectEqualStrings("location", tc.arguments[0].name) catch {};
+                                        if (std.mem.eql(u8, tc.arguments[0].value.string, "San Francisco")) {
                                             self.tool_call_arguments_received = true;
                                         }
                                     }

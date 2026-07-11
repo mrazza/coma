@@ -142,6 +142,7 @@ fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*Strea
                     error.Canceled => unreachable,
                 };
                 var tool_result = try tool_result_wrapper.result;
+
                 intermediate_results.append(allocator, .{ .tool_result = tool_result }) catch |err| {
                     tool_result.deinit();
                     return err;
