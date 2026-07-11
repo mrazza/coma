@@ -18,6 +18,7 @@ session_config: llm.types.SessionConfig,
 prev_continuation: ?llm.types.StepContinuation,
 
 const ToolError = error{ToolNotFound} || Tool.CallError;
+pub const AgentError = ToolError || Provider.ProviderError;
 
 pub fn init(allocator: Allocator, io: Io, provider: Provider, tools: []const Tool, session_config: llm.types.SessionConfig) Agent {
     return Agent{
@@ -37,7 +38,7 @@ pub fn deinit(self: *Agent) void {
     }
 }
 
-pub fn executeTurn(self: *Agent, turn: types.Turn) !types.TurnResult {
+pub fn executeTurn(self: *Agent, turn: types.Turn) AgentError!types.TurnResult {
     return self.executeTurnInternal(turn, null);
 }
 
@@ -46,7 +47,7 @@ pub fn executeTurnStreaming(
     turn: types.Turn,
     callback: types.StreamingCallback,
     callback_context: ?*anyopaque,
-) !types.TurnResult {
+) AgentError!types.TurnResult {
     var agent_streaming_ctx: StreamingContext = .{ .callback = callback, .context = callback_context };
     return self.executeTurnInternal(turn, &agent_streaming_ctx);
 }
@@ -73,7 +74,7 @@ fn executeToolCall(self: *Agent, tool_call: llm.types.ToolCall) ToolError!llm.ty
     return try tool.execute(self.allocator, self.io, tool_call.id, tool_call.arguments);
 }
 
-fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*StreamingContext) !types.TurnResult {
+fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*StreamingContext) AgentError!types.TurnResult {
     var next_steps: std.ArrayList(llm.types.Step) = .empty;
     const allocator = self.allocator;
     const io = self.io;
