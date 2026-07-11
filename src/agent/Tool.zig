@@ -134,6 +134,21 @@ fn ExpectedTypeForParam(comptime param: llm.types.Tool.Param) ValidationError!ty
     return ExpectedType;
 }
 
+/// Looks up an argument by name using a linear search.
+///
+/// A linear search is preferred over a hash map lookup here because:
+/// 1. The number of arguments passed to a tool call is typically very small (usually < 10).
+/// 2. It avoids the overhead and memory allocations of initializing a HashMap.
+/// 3. It prevents potential OutOfMemory errors during argument lookup.
+inline fn findArgument(args: []const Argument, name: []const u8) ?*const Argument {
+    for (args) |*arg| {
+        if (std.mem.eql(u8, arg.name, name)) {
+            return arg;
+        }
+    }
+    return null;
+}
+
 fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) ValidationResult {
     const FnType = @TypeOf(execute_fn);
     const fn_info = switch (@typeInfo(FnType)) {
@@ -187,10 +202,6 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
     return .{
         .ok = struct {
             pub fn call(allocator: Allocator, io: Io, input_args: []const Argument) CallError![]const u8 {
-                var argument_map: std.StringHashMap(*const Argument) = .init(allocator);
-                defer argument_map.deinit();
-                for (input_args) |*arg| try argument_map.put(arg.name, arg);
-
                 var args: TupleType = undefined;
                 var descriptor_idx: usize = 0;
                 inline for (0..fn_info.params.len) |func_idx| {
@@ -202,8 +213,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                     } else {
                         const curr_descriptor = descriptor.parameters[descriptor_idx];
                         descriptor_idx += 1;
-                        const opt_argument = argument_map.get(curr_descriptor.name);
-                        if (opt_argument) |argument| {
+                        if (findArgument(input_args, curr_descriptor.name)) |argument| {
                             const expected_tag = comptime try expectedTagForType(T);
                             if (argument.value != expected_tag.tag) {
                                 return CallError.ArgumentTypeMismatch;

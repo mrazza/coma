@@ -115,7 +115,10 @@ pub const StepAccumulator = union(enum) {
             allocator,
             acc.tool_call.arguments_json.written(),
             .{},
-        ) catch return null;
+        ) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return null;
+        };
         defer json_parsed_args.deinit();
 
         if (json_parsed_args.value != .object) {
@@ -125,7 +128,10 @@ pub const StepAccumulator = union(enum) {
         const function_arguments = api.FunctionArgument.parseFromJsonObject(
             allocator,
             json_parsed_args.value,
-        ) catch return null;
+        ) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return null;
+        };
         defer allocator.free(function_arguments);
 
         const new_count = function_arguments.len - acc.tool_call.processed_argument_count;
