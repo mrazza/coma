@@ -158,78 +158,16 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // Creates an executable that will run `test` blocks from the provided module.
-    // Here `mod` needs to define a target, which is why earlier we made sure to
-    // set the releative field.
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
-    });
-
-    // A run step that will run the test executable.
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-
-    // Creates an executable that will run `test` blocks from the executable's
-    // root module. Note that test executables only test one module at a time,
-    // hence why we have to create two separate ones.
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
-
-    // A run step that will run the second test executable.
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-
-    // Creates an executable that will run `test` blocks from the provider module.
-    const provider_tests = b.addTest(.{
-        .root_module = provider,
-    });
-    const run_provider_tests = b.addRunArtifact(provider_tests);
-
-    const agent_tests = b.addTest(.{
-        .root_module = agent,
-    });
-    const run_agent_test = b.addRunArtifact(agent_tests);
-
-    // Creates an executable that will run `test` blocks from the llm module.
-    const llm_test_module = b.createModule(.{
-        .root_source_file = b.path("src/llm/root.tests.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "llm", .module = llm },
-            .{ .name = "testing", .module = testing },
-        },
-    });
-    const llm_tests = b.addTest(.{
-        .root_module = llm_test_module,
-    });
-    const run_llm_tests = b.addRunArtifact(llm_tests);
-
-    // Creates an executable that will run `test` blocks from the testing module.
-    const testing_tests = b.addTest(.{
-        .root_module = testing,
-    });
-    const run_testing_tests = b.addRunArtifact(testing_tests);
-
-    // A top level step for running all tests. dependOn can be called multiple
-    // times and since the two run steps do not depend on one another, this will
-    // make the two of them run in parallel.
+    // Run all tests in the standard build step
+    const standard_test_suites = createTestSuites(b, target, optimize);
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
-    test_step.dependOn(&run_provider_tests.step);
-    test_step.dependOn(&run_agent_test.step);
-    test_step.dependOn(&run_llm_tests.step);
-    test_step.dependOn(&run_testing_tests.step);
+    for (standard_test_suites) |suite| {
+        const run = b.addRunArtifact(suite);
+        test_step.dependOn(&run.step);
+    }
 
     const coverage_step = b.step("coverage", "Generate coverage reports using kcov");
-    const test_suites = [_]*std.Build.Step.Compile{
-        mod_tests,
-        exe_tests,
-        provider_tests,
-        agent_tests,
-        llm_tests,
-        testing_tests,
-    };
+    const coverage_test_suites = createTestSuites(b, target, .ReleaseSafe);
     const make_dir = b.addSystemCommand(&.{ "mkdir", "-p", "kcov-out" });
 
     const merge_cover = b.addSystemCommand(&.{
@@ -243,7 +181,8 @@ pub fn build(b: *std.Build) void {
         "kcov-out/suite_4",
         "kcov-out/suite_5",
     });
-    for (test_suites, 0..) |test_exe, i| {
+
+    for (coverage_test_suites, 0..) |suite, i| {
         const out_dir = b.fmt("kcov-out/suite_{d}", .{i});
         const run_cover = b.addSystemCommand(&.{
             "kcov",
@@ -252,13 +191,14 @@ pub fn build(b: *std.Build) void {
             out_dir,
         });
         run_cover.step.dependOn(&make_dir.step);
-        run_cover.addArtifactArg(test_exe);
+        run_cover.addArtifactArg(suite);
         merge_cover.step.dependOn(&run_cover.step);
     }
-    var clean_args = b.allocator.alloc([]const u8, 2 + test_suites.len) catch @panic("OOM");
+
+    var clean_args = b.allocator.alloc([]const u8, 2 + coverage_test_suites.len) catch @panic("OOM");
     clean_args[0] = "rm";
     clean_args[1] = "-rf";
-    for (test_suites, 0..) |_, i| {
+    for (coverage_test_suites, 0..) |_, i| {
         clean_args[2 + i] = b.fmt("kcov-out/suite_{d}", .{i});
     }
     const clean_cover = b.addSystemCommand(clean_args);
@@ -276,4 +216,88 @@ pub fn build(b: *std.Build) void {
     //
     // Lastly, the Zig build system is relatively simple and self-contained,
     // and reading its source code will allow you to master it.
+}
+
+fn createTestSuites(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) [6]*std.Build.Step.Compile {
+    const llm = b.createModule(.{
+        .root_source_file = b.path("src/llm/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const testing = b.createModule(.{
+        .root_source_file = b.path("src/testing/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "llm", .module = llm },
+        },
+    });
+
+    const provider = b.createModule(.{
+        .root_source_file = b.path("src/provider/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "llm", .module = llm },
+            .{ .name = "testing", .module = testing },
+        },
+    });
+
+    const agent = b.createModule(.{
+        .root_source_file = b.path("src/agent/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "llm", .module = llm },
+            .{ .name = "provider", .module = provider },
+            .{ .name = "testing", .module = testing },
+        },
+    });
+
+    const coma = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "llm", .module = llm },
+            .{ .name = "provider", .module = provider },
+            .{ .name = "agent", .module = agent },
+        },
+    });
+
+    const main_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "coma", .module = coma },
+            .{ .name = "llm", .module = llm },
+            .{ .name = "provider", .module = provider },
+            .{ .name = "agent", .module = agent },
+        },
+    });
+
+    const llm_test_module = b.createModule(.{
+        .root_source_file = b.path("src/llm/root.tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "llm", .module = llm },
+            .{ .name = "testing", .module = testing },
+        },
+    });
+
+    return .{
+        b.addTest(.{ .root_module = coma }),
+        b.addTest(.{ .root_module = main_module }),
+        b.addTest(.{ .root_module = provider }),
+        b.addTest(.{ .root_module = agent }),
+        b.addTest(.{ .root_module = llm_test_module }),
+        b.addTest(.{ .root_module = testing }),
+    };
 }
