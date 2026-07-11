@@ -141,10 +141,8 @@ fn streamCallback(ctx: ?*anyopaque, agent_chunk: agent_pkg.types.StreamingChunk)
                                     }
                                 },
                                 .tool_call => |tc| {
-                                    if (stream_ctx.current_type != .tool_call) {
-                                        std.debug.print("\n{s}[Tool Call: {s}]{s}\n", .{ color_yellow, tc.name, color_reset });
-                                        stream_ctx.current_type = .tool_call;
-                                    }
+                                    std.debug.print("\n{s}[Tool Call ({s}): {s}]{s}\n", .{ color_yellow, tc.id, tc.name, color_reset });
+                                    stream_ctx.current_type = .tool_call;
                                 },
                             }
                         },
@@ -170,6 +168,7 @@ fn streamCallback(ctx: ?*anyopaque, agent_chunk: agent_pkg.types.StreamingChunk)
                                 },
                                 .tool_call => |args| {
                                     for (args) |arg| {
+                                        // TODO(razza): Add tool call ID here.
                                         switch (arg.value) {
                                             .string => |s| std.debug.print("  {s}: \"{s}\"\n", .{ arg.name, s }),
                                             .integer => |i| std.debug.print("  {s}: {}\n", .{ arg.name, i }),
@@ -190,7 +189,7 @@ fn streamCallback(ctx: ?*anyopaque, agent_chunk: agent_pkg.types.StreamingChunk)
             }
         },
         .tool_result => |tr| {
-            std.debug.print("{s}Output:{s}\n{s}\n", .{ color_green, color_reset, tr.result });
+            std.debug.print("{s}Output ({s}):{s}\n{s}\n", .{ color_green, tr.id, color_reset, tr.result });
         },
     }
 }
