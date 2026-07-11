@@ -3,14 +3,24 @@ const llm = @import("llm");
 
 const Allocator = std.mem.Allocator;
 
+/// Represents the input to start a single execution turn for the Agent.
 pub const Turn = struct {
+    /// The input text prompt or message for this turn.
     prompt: []const u8,
 };
 
+/// The result of an intermediate step executed during an agent turn.
+///
+/// An intermediate step is either a response from the model that required further
+/// processing (e.g. a tool call) or the result of executing a tool call requested by
+/// the model.
 pub const IntermediateStepResult = union(enum) {
+    /// The result of an LLM generation step.
     step_result: llm.types.StepResult,
+    /// The result of executing a tool call requested by the model.
     tool_result: llm.types.ToolResult,
 
+    /// Frees the resources associated with the intermediate step result.
     pub fn deinit(self: *IntermediateStepResult) void {
         switch (self.*) {
             .step_result => |*step_result| step_result.deinit(),
@@ -20,9 +30,14 @@ pub const IntermediateStepResult = union(enum) {
     }
 };
 
+/// The final result of an agent turn, including all intermediate steps taken and the final LLM step result.
+/// Memory must be freed using the `deinit` method.
 pub const TurnResult = struct {
+    /// The allocator used to allocate resources in this TurnResult.
     allocator: Allocator,
+    /// The history of intermediate steps (model thoughts, tool calls, and results) executed during the turn.
     intermediate_steps: []IntermediateStepResult,
+    /// The final step result that completed the turn (typically the model's final text output).
     final_step: llm.types.StepResult,
 
     /// Deinitializes the TurnResult and frees all associated memory.
@@ -42,7 +57,9 @@ pub const TurnResult = struct {
 
 /// The data chunk representing incremental updates in a streaming Agent turn.
 pub const StreamingChunk = union(enum) {
+    /// An incremental update chunk from the streaming LLM response.
     model_chunk: llm.types.StreamingChunk,
+    /// The outcome/result of executing a tool.
     tool_result: llm.types.ToolResult,
 };
 
