@@ -328,9 +328,18 @@ fn MakeProvider(comptime ClientType: type) type {
                         });
                     },
                     .tool_call => |*tc| {
-                        const json_parsed_args = std.json.parseFromSlice(std.json.Value, result_arena.allocator(), tc.arguments_json.written(), .{}) catch return ProviderError.BadResponse;
-                        const function_arguments = api.FunctionArgument.parseFromJsonObject(result_arena.allocator(), json_parsed_args.value) catch return ProviderError.BadResponse;
-                        const parsed_args = converter.toArguments(result_arena.allocator(), function_arguments) catch return ProviderError.BadResponse;
+                        const json_parsed_args = std.json.parseFromSlice(std.json.Value, result_arena.allocator(), tc.arguments_json.written(), .{}) catch |err| {
+                            if (err == error.OutOfMemory) return error.OutOfMemory;
+                            return ProviderError.BadResponse;
+                        };
+                        const function_arguments = api.FunctionArgument.parseFromJsonObject(result_arena.allocator(), json_parsed_args.value) catch |err| {
+                            if (err == error.OutOfMemory) return error.OutOfMemory;
+                            return ProviderError.BadResponse;
+                        };
+                        const parsed_args = converter.toArguments(result_arena.allocator(), function_arguments) catch |err| {
+                            if (err == error.OutOfMemory) return error.OutOfMemory;
+                            return ProviderError.BadResponse;
+                        };
                         try final_tool_calls.append(result_arena.allocator(), .{
                             .id = tc.id,
                             .name = tc.name,
