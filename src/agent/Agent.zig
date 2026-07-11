@@ -17,6 +17,8 @@ tools: []const Tool,
 session_config: llm.types.SessionConfig,
 prev_continuation: ?llm.types.StepContinuation,
 
+const ToolError = error{ToolNotFound} || Tool.CallError;
+
 pub fn init(allocator: Allocator, io: Io, provider: Provider, tools: []const Tool, session_config: llm.types.SessionConfig) Agent {
     return Agent{
         .allocator = allocator,
@@ -59,8 +61,7 @@ fn streamingCallbackProxy(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) voi
     streaming_ctx.callback(streaming_ctx.context, .{ .model_chunk = chunk });
 }
 
-// TODO(razza): Make the error type more specific.
-fn executeToolCall(self: *Agent, tool_call: llm.types.ToolCall) anyerror!llm.types.ToolResult {
+fn executeToolCall(self: *Agent, tool_call: llm.types.ToolCall) ToolError!llm.types.ToolResult {
     const tool = for (self.tools) |t| {
         if (std.mem.eql(u8, t.descriptor.name, tool_call.name)) {
             break t;
@@ -122,7 +123,7 @@ fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*Strea
                 return err;
             };
 
-            const tool_futures: []Future(anyerror!llm.types.ToolResult) = try allocator.alloc(Future(anyerror!llm.types.ToolResult), step_result.tool_calls.len);
+            const tool_futures: []Future(ToolError!llm.types.ToolResult) = try allocator.alloc(Future(ToolError!llm.types.ToolResult), step_result.tool_calls.len);
             defer allocator.free(tool_futures);
             defer for (tool_futures) |*tf| {
                 _ = tf.cancel(io) catch {};
