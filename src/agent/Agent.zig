@@ -20,6 +20,13 @@ prev_continuation: ?llm.types.StepContinuation,
 const ToolError = error{ToolNotFound} || Tool.CallError;
 pub const AgentError = ToolError || Provider.ProviderError;
 
+/// Initializes a new Agent instance.
+///
+/// `allocator` is used for all internal dynamic memory allocations.
+/// `io` is the I/O context to use for operations.
+/// `provider` is a Provider interface implementation that determines the LLM provider to use.
+/// `tools` is the set of tools available for the agent to execute.
+/// `session_config` contains the initial configuration for the LLM session.
 pub fn init(allocator: Allocator, io: Io, provider: Provider, tools: []const Tool, session_config: llm.types.SessionConfig) Agent {
     return Agent{
         .allocator = allocator,
@@ -31,6 +38,7 @@ pub fn init(allocator: Allocator, io: Io, provider: Provider, tools: []const Too
     };
 }
 
+/// Deinitializes the Agent, releasing any accumulated session history and internal resources.
 pub fn deinit(self: *Agent) void {
     if (self.prev_continuation) |*ls| {
         ls.deinit();
@@ -38,10 +46,29 @@ pub fn deinit(self: *Agent) void {
     }
 }
 
+/// Executes a single non-streaming turn of the agent.
+///
+/// The agent sends the turn's prompt to the LLM, handles any tool calls recommended by the model
+/// sequentially/concurrently, and returns a `TurnResult` containing the final output and history
+/// when the model is finished thinking and using tools.
+///
+/// `turn` contains the prompt to send to the LLM.
+///
+/// The caller is responsible for deinitializing the returned `TurnResult` by calling deinit() on it.
 pub fn executeTurn(self: *Agent, turn: types.Turn) AgentError!types.TurnResult {
     return self.executeTurnInternal(turn, null);
 }
 
+/// Executes a single turn of the agent while streaming progress back via a callback.
+///
+/// Model chunks and tool results are streamed back via `callback`.
+/// Like `executeTurn`, this handles intermediate tool executions, and returns a final `TurnResult`.
+///
+/// `turn` contains the prompt to send to the LLM.
+/// `callback` is called with the `callback_context` whenever a new streaming chunk or tool execution result is available.
+/// `callback_context` is arbitrary data to be passed to the callback as a opaque pointer.
+///
+/// The caller is responsible for deinitializing the returned `TurnResult` by calling deinit() on it.
 pub fn executeTurnStreaming(
     self: *Agent,
     turn: types.Turn,
