@@ -20,7 +20,7 @@ pub fn deinit(self: *Agent) void {
 }
 
 pub fn executeTurn(self: *Agent, allocator: Allocator, turn: types.Turn) !types.TurnResult {
-    return self.executeTurnInternal(allocator, turn, null, null);
+    return self.executeTurnInternal(allocator, turn, null);
 }
 
 pub fn executeTurnStreaming(
@@ -204,7 +204,7 @@ test "Agent.executeTurnStreaming - no tool calls" {
     var dummy_ctx = DummyContext{};
 
     const callback = struct {
-        fn cb(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+        fn cb(ctx: ?*anyopaque, chunk: types.StreamingChunk) void {
             _ = chunk;
             const c: *DummyContext = @ptrCast(@alignCast(ctx));
             c.called = true;
