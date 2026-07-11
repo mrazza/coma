@@ -67,7 +67,7 @@ fn executeToolCall(self: *Agent, tool_call: llm.types.ToolCall) ToolError!llm.ty
             break t;
         }
     } else {
-        return error.ToolNotFound;
+        return ToolError.ToolNotFound;
     };
 
     return try tool.execute(self.allocator, self.io, tool_call.id, tool_call.arguments);
