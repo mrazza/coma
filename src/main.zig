@@ -232,7 +232,7 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
 }
 
 // TODO(razza): Get rid of global IO and make it an optional argument (like Allocator) to tools.
-threadlocal var global_io: std.Io = undefined;
+var global_io: std.Io = undefined;
 
 fn executeTypescript(allocator: std.mem.Allocator, code: []const u8) ![]const u8 {
     const argv = [_][]const u8{

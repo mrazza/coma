@@ -6,6 +6,7 @@ const types = @import("./types.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Provider = llm.Provider;
+const Future = std.Io.Future;
 
 const Agent = @This();
 
@@ -58,9 +59,23 @@ fn streamingCallbackProxy(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) voi
     streaming_ctx.callback(streaming_ctx.context, .{ .model_chunk = chunk });
 }
 
+// TODO(razza): Make the error type more specific.
+fn executeToolCall(self: *Agent, tool_call: llm.types.ToolCall) anyerror!llm.types.ToolResult {
+    const tool = for (self.tools) |t| {
+        if (std.mem.eql(u8, t.descriptor.name, tool_call.name)) {
+            break t;
+        }
+    } else {
+        return error.ToolNotFound;
+    };
+
+    return try tool.execute(self.allocator, tool_call.id, tool_call.arguments);
+}
+
 fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*StreamingContext) !types.TurnResult {
     var next_steps: std.ArrayList(llm.types.Step) = .empty;
     const allocator = self.allocator;
+    const io = self.io;
     defer next_steps.deinit(allocator);
     try next_steps.append(allocator, .{ .prompt = turn.prompt });
 
@@ -106,16 +121,17 @@ fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*Strea
                 step_result.deinit();
                 return err;
             };
-            for (step_result.tool_calls) |tool_call| {
-                const tool = for (self.tools) |t| {
-                    if (std.mem.eql(u8, t.descriptor.name, tool_call.name)) {
-                        break t;
-                    }
-                } else {
-                    return error.ToolNotFound;
-                };
 
-                var tool_result = try tool.execute(allocator, tool_call.id, tool_call.arguments);
+            const tool_futures: []Future(anyerror!llm.types.ToolResult) = try allocator.alloc(Future(anyerror!llm.types.ToolResult), step_result.tool_calls.len);
+            defer allocator.free(tool_futures);
+            defer for (tool_futures) |*tf| {
+                _ = tf.cancel(io) catch {};
+            };
+            for (step_result.tool_calls, 0..) |tool_call, call_idx| {
+                tool_futures[call_idx] = io.async(executeToolCall, .{ self, tool_call });
+            }
+            for (tool_futures) |*tf| {
+                var tool_result = try tf.await(io);
                 intermediate_results.append(allocator, .{ .tool_result = tool_result }) catch |err| {
                     tool_result.deinit();
                     return err;
@@ -137,7 +153,7 @@ fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*Strea
 }
 
 const testing_pkg = @import("testing");
-threadlocal var test_mock_provider: ?*testing_pkg.MockProvider = null;
+var test_mock_provider: ?*testing_pkg.MockProvider = null;
 
 test "Agent.executeTurn - no tool calls" {
     const allocator = std.testing.allocator;
