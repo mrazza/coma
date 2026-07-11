@@ -169,7 +169,14 @@ fn streamCallback(ctx: ?*anyopaque, agent_chunk: agent_pkg.types.StreamingChunk)
                                     }
                                 },
                                 .tool_call => |args| {
-                                    _ = args;
+                                    for (args) |arg| {
+                                        switch (arg.value) {
+                                            .string => |s| std.debug.print("  {s}: \"{s}\"\n", .{ arg.name, s }),
+                                            .integer => |i| std.debug.print("  {s}: {}\n", .{ arg.name, i }),
+                                            .float => |f| std.debug.print("  {s}: {d}\n", .{ arg.name, f }),
+                                            .boolean => |b| std.debug.print("  {s}: {}\n", .{ arg.name, b }),
+                                        }
+                                    }
                                 },
                             }
                         },
@@ -183,7 +190,7 @@ fn streamCallback(ctx: ?*anyopaque, agent_chunk: agent_pkg.types.StreamingChunk)
             }
         },
         .tool_result => |tr| {
-            std.debug.print("{s}Output:{s}\n{s}", .{ color_green, color_reset, tr.result });
+            std.debug.print("{s}Output:{s}\n{s}\n", .{ color_green, color_reset, tr.result });
         },
     }
 }
@@ -228,9 +235,6 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
 threadlocal var global_io: std.Io = undefined;
 
 fn executeTypescript(allocator: std.mem.Allocator, code: []const u8) ![]const u8 {
-    std.debug.print("\n{s}Executing TypeScript code...{s}\n", .{ color_yellow, color_reset });
-    std.debug.print("{s}--- CODE ---{s}\n{s}\n{s}------------{s}\n", .{ color_gray, color_reset, code, color_gray, color_reset });
-
     const argv = [_][]const u8{
         "npx", "tsx", "-e", code,
     };
