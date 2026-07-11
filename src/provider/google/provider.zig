@@ -1327,3 +1327,54 @@ test "StreamingStepResult.init OOM" {
 test "StepContinuation.init OOM" {
     try std.testing.expectError(error.OutOfMemory, gemini_types.StepContinuation.init(std.testing.failing_allocator, "id"));
 }
+
+test "Gemini.executeStepStreaming malformed stream payload" {
+    const allocator = std.testing.allocator;
+
+    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}";
+    const response_body =
+        \\event: step.delta
+        \\data: {invalid_json
+        \\
+    ;
+
+    var call_counts = [_]usize{0};
+    const mock_client = testing.MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = expected_payload,
+                .response_status = .ok,
+                .response_body = response_body,
+            },
+        },
+        .sequential = false,
+        .call_counts = &call_counts,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
+        .tools = &.{},
+    };
+    const input = &[_]llm.types.Step{
+        .{ .prompt = "Hello" },
+    };
+
+    const CallbackState = struct {
+        fn callback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+            _ = ctx;
+            _ = chunk;
+        }
+    };
+
+    try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, input, null, CallbackState.callback, null));
+}
