@@ -334,14 +334,7 @@ pub fn main(init: std.process.Init) !void {
         },
     };
 
-    var agent = Agent{
-        .io = io,
-        .allocator = allocator,
-        .provider = client,
-        .tools = tools,
-        .session_config = session_config,
-        .prev_continuation = null,
-    };
+    var agent: Agent = .init(allocator, io, client, tools, session_config);
     defer agent.deinit();
 
     std.debug.print(
