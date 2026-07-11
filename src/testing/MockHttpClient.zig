@@ -66,7 +66,9 @@ fn verifyExpectation(options: anytype, expectation: RequestExpectation) !void {
         if (@hasField(@TypeOf(options), "payload")) {
             try std.testing.expectEqualStrings(expected, options.payload);
         } else {
-            return error.ExpectedPayloadButGotNone;
+            if (@hasField(@TypeOf(options), "response_writer")) {
+                return error.ExpectedPayloadButGotNone;
+            }
         }
     } else {
         if (@hasField(@TypeOf(options), "payload")) {
@@ -450,4 +452,68 @@ test "MockHttpClient - verification errors unexpected payload" {
         .method = .POST,
         .payload = "unexpected_payload_data",
     }));
+}
+
+test "MockHttpClient - sequential request flow" {
+    const allocator = std.testing.allocator;
+    const uri_post = try std.Uri.parse("https://example.com/post");
+    const uri_get = try std.Uri.parse("https://example.com/get");
+
+    var call_counts = [_]usize{ 0, 0 };
+    var client = MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/post",
+                .expected_query = null,
+                .expected_method = .POST,
+                .expected_payload = "payload123",
+                .response_status = .ok,
+                .response_body = "response_post",
+            },
+            .{
+                .expected_scheme = "https",
+                .expected_host = "example.com",
+                .expected_path = "/get",
+                .expected_query = null,
+                .expected_method = .GET,
+                .expected_payload = null,
+                .response_status = .ok,
+                .response_body = "response_get",
+            },
+        },
+        .sequential = true,
+        .call_counts = &call_counts,
+    };
+
+    // 1. POST request
+    {
+        var req = try client.request(.POST, uri_post, .{});
+        defer req.deinit();
+        try req.sendBodyComplete("payload123");
+        var resp = try req.receiveHead("");
+        const reader = resp.reader(&[_]u8{});
+        var buf: [100]u8 = undefined;
+        const n = try reader.readSliceShort(&buf);
+        try std.testing.expectEqualStrings("response_post", buf[0..n]);
+        try std.testing.expectEqual(@as(usize, 1), call_counts[0]);
+    }
+
+    // 2. GET request
+    {
+        var req = try client.request(.GET, uri_get, .{});
+        defer req.deinit();
+        try req.sendBodyComplete("");
+        var resp = try req.receiveHead("");
+        const reader = resp.reader(&[_]u8{});
+        var buf: [100]u8 = undefined;
+        const n = try reader.readSliceShort(&buf);
+        try std.testing.expectEqualStrings("response_get", buf[0..n]);
+        try std.testing.expectEqual(@as(usize, 1), call_counts[1]);
+    }
+
+    // 3. Too many calls error
+    try std.testing.expectError(error.TooManyCalls, client.request(.GET, uri_get, .{}));
 }

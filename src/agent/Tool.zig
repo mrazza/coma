@@ -618,6 +618,39 @@ test "execute - missing optional argument" {
     try std.testing.expectEqualStrings("default", result.result);
 }
 
+test "execute - optional argument provided" {
+    const testing_allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const desc: llm.types.Tool = .{
+        .name = "test_tool",
+        .description = "desc",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "desc",
+                .type = .string,
+                .required = false,
+            },
+        },
+    };
+    const Impl = struct {
+        pub fn run(allocator: Allocator, arg1: ?[]const u8) ![]const u8 {
+            if (arg1 != null) return allocator.dupe(u8, arg1.?);
+            return allocator.dupe(u8, "default");
+        }
+    };
+    const tool = Tool.init(desc, Impl.run);
+    const args: []const Argument = &.{
+        .{ .name = "arg1", .value = .{ .string = "provided" } },
+    };
+    var result = try tool.execute(testing_allocator, io, "id", args);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("test_tool", result.tool_name);
+    try std.testing.expectEqualStrings("id", result.id);
+    try std.testing.expectEqualStrings("provided", result.result);
+}
+
 test "execute - argument type mismatch" {
     const testing_allocator = std.testing.allocator;
     const io = std.testing.io;
