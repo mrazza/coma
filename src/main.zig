@@ -335,6 +335,8 @@ pub fn main(init: std.process.Init) !void {
     };
 
     var agent = Agent{
+        .io = io,
+        .allocator = allocator,
         .provider = client,
         .tools = tools,
         .session_config = session_config,
@@ -363,7 +365,7 @@ pub fn main(init: std.process.Init) !void {
 
         const turn = types.Turn{ .prompt = user_input };
         var stream_ctx = StreamContext{ .allocator = allocator };
-        var result = agent.executeTurnStreaming(allocator, turn, streamCallback, &stream_ctx) catch |err| {
+        var result = agent.executeTurnStreaming(turn, streamCallback, &stream_ctx) catch |err| {
             std.debug.print("Error during execution: {}\n", .{err});
             continue;
         };
