@@ -5,15 +5,27 @@ const types = @import("./types.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const Provider = llm.Provider;
 
 const Agent = @This();
 
 allocator: Allocator,
 io: Io,
-provider: llm.Provider,
+provider: Provider,
 tools: []const Tool,
 session_config: llm.types.SessionConfig,
 prev_continuation: ?llm.types.StepContinuation,
+
+pub fn init(allocator: Allocator, io: Io, provider: Provider, tools: []const Tool, session_config: llm.types.SessionConfig) Agent {
+    return Agent{
+        .allocator = allocator,
+        .io = io,
+        .provider = provider,
+        .tools = tools,
+        .session_config = session_config,
+        .prev_continuation = null,
+    };
+}
 
 pub fn deinit(self: *Agent) void {
     if (self.prev_continuation) |*ls| {
@@ -182,17 +194,16 @@ test "Agent.executeTurnStreaming - no tool calls" {
         .display_name = "Mock Model",
     };
 
-    var agent = Agent{
-        .allocator = allocator,
-        .io = io,
-        .provider = prov,
-        .tools = &.{},
-        .session_config = .{
+    var agent: Agent = .init(
+        allocator,
+        io,
+        prov,
+        &.{},
+        .{
             .model = mock_model,
             .tools = &.{},
         },
-        .prev_continuation = null,
-    };
+    );
     defer agent.deinit();
 
     mock_provider.execute_step_result = llm.types.StepResult{
@@ -273,17 +284,16 @@ test "Agent.executeTurn - executes tool call and runs again" {
         .display_name = "Mock Model",
     };
 
-    var agent = Agent{
-        .allocator = allocator,
-        .io = io,
-        .provider = prov,
-        .tools = tools,
-        .session_config = .{
+    var agent: Agent = .init(
+        allocator,
+        io,
+        prov,
+        tools,
+        .{
             .model = mock_model,
             .tools = &.{tool.descriptor},
         },
-        .prev_continuation = null,
-    };
+    );
     defer agent.deinit();
 
     const args = [_]llm.types.Argument{
