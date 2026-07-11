@@ -39,3 +39,12 @@ pub const TurnResult = struct {
         self.* = undefined;
     }
 };
+
+/// The data chunk representing incremental updates in a streaming Agent turn.
+pub const StreamingChunk = union(enum) {
+    model_chunk: llm.types.StreamingChunk,
+    tool_result: llm.types.ToolResult,
+};
+
+/// Callback function signature for processing streaming response chunks.
+pub const StreamingCallback = *const fn (context: ?*anyopaque, chunk: StreamingChunk) void;

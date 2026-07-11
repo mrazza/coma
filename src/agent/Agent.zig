@@ -27,19 +27,24 @@ pub fn executeTurnStreaming(
     self: *Agent,
     allocator: Allocator,
     turn: types.Turn,
-    callback: llm.types.StreamingCallback,
+    callback: types.StreamingCallback,
     callback_context: ?*anyopaque,
 ) !types.TurnResult {
-    return self.executeTurnInternal(allocator, turn, callback, callback_context);
+    var agent_streaming_ctx: StreamingContext = .{ .callback = callback, .context = callback_context };
+    return self.executeTurnInternal(allocator, turn, &agent_streaming_ctx);
 }
 
-fn executeTurnInternal(
-    self: *Agent,
-    allocator: Allocator,
-    turn: types.Turn,
-    callback: ?llm.types.StreamingCallback,
-    callback_context: ?*anyopaque,
-) !types.TurnResult {
+const StreamingContext = struct {
+    callback: types.StreamingCallback,
+    context: ?*anyopaque,
+};
+
+fn streamingCallbackProxy(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
+    const streaming_ctx: *StreamingContext = @ptrCast(@alignCast(ctx));
+    streaming_ctx.callback(streaming_ctx.context, .{ .model_chunk = chunk });
+}
+
+fn executeTurnInternal(self: *Agent, allocator: Allocator, turn: types.Turn, callback_context: ?*StreamingContext) !types.TurnResult {
     var next_steps: std.ArrayList(llm.types.Step) = .empty;
     defer next_steps.deinit(allocator);
     try next_steps.append(allocator, .{ .prompt = turn.prompt });
@@ -57,14 +62,14 @@ fn executeTurnInternal(
     }
 
     while (true) {
-        const step_outcome = if (callback) |cb|
+        const step_outcome = if (callback_context) |cb|
             try self.provider.executeStepStreaming(
                 allocator,
                 self.session_config,
                 next_steps.items,
                 self.prev_continuation,
+                streamingCallbackProxy,
                 cb,
-                callback_context,
             )
         else
             try self.provider.executeStep(
@@ -101,6 +106,10 @@ fn executeTurnInternal(
                     return err;
                 };
                 try next_steps.append(allocator, .{ .tool_result = tool_result });
+
+                if (callback_context) |cb| {
+                    cb.callback(cb.context, .{ .tool_result = tool_result });
+                }
             }
         } else {
             return .{
@@ -210,7 +219,6 @@ test "Agent.executeTurnStreaming - no tool calls" {
     try std.testing.expect(agent.prev_continuation != null);
     try std.testing.expectEqualStrings("Hello user!", result.final_step.model_output[0].text);
 }
-
 
 const MockToolImpl = struct {
     pub fn execute(allocator: std.mem.Allocator, val: i64) ![]const u8 {
