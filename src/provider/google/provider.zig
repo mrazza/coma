@@ -279,35 +279,13 @@ fn MakeProvider(comptime ClientType: type) type {
                         const acc: *StepAccumulator = &step_accumulators.items[e.index];
                         acc.appendStep(e.delta) catch |err| return Helper.mapError(err);
 
-                        var arguments: []const llm.types.Argument = &.{};
-                        defer {
-                            for (arguments) |arg| {
-                                allocator.free(arg.name);
-                                switch (arg.value) {
-                                    .string => |s| allocator.free(s),
-                                    else => {},
-                                }
-                            }
-                            allocator.free(arguments);
-                        }
-
-                        if (e.delta == .arguments_delta) {
-                            if (try acc.handleToolCallDelta(allocator)) |args| {
-                                arguments = args;
-                            }
-                        }
-                        const delta_payload = switch (e.delta) {
-                            .arguments_delta => converter.toToolDelta(e.delta, acc.tool_call.id, acc.tool_call.name, arguments),
-                            .text_delta => converter.toDelta(e.delta),
-                            .thought_summary => converter.toDelta(e.delta),
-                        };
-
-                        if (delta_payload) |payload| {
+                        if (try acc.buildDelta(allocator, e.delta)) |t_delta| {
+                            defer t_delta.deinit();
                             callback(callback_context, .{
                                 .event = .{
                                     .step_event = .{
                                         .index = e.index,
-                                        .event = .{ .delta = payload },
+                                        .event = .{ .delta = t_delta.delta },
                                     },
                                 },
                             });
@@ -512,6 +490,54 @@ const StepAccumulator = union(enum) {
 
         acc.tool_call.processed_argument_count = function_arguments.len;
         return arguments;
+    }
+
+    pub fn buildDelta(
+        self: *@This(),
+        allocator: Allocator,
+        delta: api.InteractionStepDelta,
+    ) !?TransientDelta {
+        return switch (self.*) {
+            .thought => .{
+                .delta = converter.toThoughtDelta(delta.thought_summary),
+                .allocator = allocator,
+            },
+            .model_output => .{
+                .delta = converter.toModelOutputDelta(delta.text_delta),
+                .allocator = allocator,
+            },
+            .tool_call => |*tc| {
+                if (try self.handleToolCallDelta(allocator)) |args| {
+                    return .{
+                        .delta = converter.toToolCallDelta(tc.id, tc.name, args),
+                        .allocator = allocator,
+                    };
+                }
+                return null;
+            },
+            .empty => unreachable,
+        };
+    }
+};
+
+const TransientDelta = struct {
+    delta: llm.types.Delta,
+    allocator: Allocator,
+
+    pub fn deinit(self: @This()) void {
+        switch (self.delta) {
+            .tool_call => |tc| {
+                for (tc.arguments) |arg| {
+                    self.allocator.free(arg.name);
+                    switch (arg.value) {
+                        .string => |s| self.allocator.free(s),
+                        else => {},
+                    }
+                }
+                self.allocator.free(tc.arguments);
+            },
+            else => {},
+        }
     }
 };
 
@@ -1290,6 +1316,78 @@ test "StepAccumulator mismatch delta and init empty" {
         .text_delta = .{ .type = .text, .text = "text" },
     };
     try std.testing.expectError(error.BadResponse, acc.appendStep(delta));
+}
+
+test "StepAccumulator buildDelta thought" {
+    const allocator = std.testing.allocator;
+
+    var thoughts = [_]api.Content{.{ .type = .text, .text = "thought_init" }};
+    var acc = try StepAccumulator.init(allocator, .{ .thought = &thoughts });
+    defer acc.thought.deinit();
+
+    const delta = api.InteractionStepDelta{
+        .thought_summary = .{
+            .content = .{ .type = .text, .text = "thought_more" },
+        },
+    };
+    try acc.appendStep(delta);
+    const t_delta = (try acc.buildDelta(allocator, delta)).?;
+    defer t_delta.deinit();
+
+    try std.testing.expect(t_delta.delta == .thought);
+    try std.testing.expectEqualStrings("thought_more", t_delta.delta.thought.text);
+}
+
+test "StepAccumulator buildDelta model_output" {
+    const allocator = std.testing.allocator;
+
+    var outputs = [_]api.Content{.{ .type = .text, .text = "output_init" }};
+    var acc = try StepAccumulator.init(allocator, .{ .model_output = &outputs });
+    defer acc.model_output.deinit();
+
+    const delta = api.InteractionStepDelta{
+        .text_delta = .{ .type = .text, .text = "output_more" },
+    };
+    try acc.appendStep(delta);
+    const t_delta = (try acc.buildDelta(allocator, delta)).?;
+    defer t_delta.deinit();
+
+    try std.testing.expect(t_delta.delta == .model_output);
+    try std.testing.expectEqualStrings("output_more", t_delta.delta.model_output.text);
+}
+
+test "StepAccumulator buildDelta tool_call" {
+    const allocator = std.testing.allocator;
+
+    var acc = try StepAccumulator.init(allocator, .{
+        .function_call = .{
+            .id = "tc_boston",
+            .name = "get_weather",
+            .arguments = &.{},
+        },
+    });
+    defer {
+        allocator.free(acc.tool_call.id);
+        allocator.free(acc.tool_call.name);
+        acc.tool_call.arguments_json.deinit();
+    }
+
+    const delta = api.InteractionStepDelta{
+        .arguments_delta = .{ .arguments = "{\"location\": \"Boston\"}" },
+    };
+    try acc.appendStep(delta);
+
+    const t_delta_opt = try acc.buildDelta(allocator, delta);
+    try std.testing.expect(t_delta_opt != null);
+    const t_delta = t_delta_opt.?;
+    defer t_delta.deinit();
+
+    try std.testing.expect(t_delta.delta == .tool_call);
+    try std.testing.expectEqualStrings("tc_boston", t_delta.delta.tool_call.id);
+    try std.testing.expectEqualStrings("get_weather", t_delta.delta.tool_call.name);
+    try std.testing.expectEqual(1, t_delta.delta.tool_call.arguments.len);
+    try std.testing.expectEqualStrings("location", t_delta.delta.tool_call.arguments[0].name);
+    try std.testing.expectEqualStrings("Boston", t_delta.delta.tool_call.arguments[0].value.string);
 }
 
 test "Gemini.executeStep returns function call" {
