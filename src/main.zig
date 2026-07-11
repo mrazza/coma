@@ -230,14 +230,11 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
     return error.ApiKeyMissing;
 }
 
-// TODO(razza): Get rid of global IO and make it an optional argument (like Allocator) to tools.
-var global_io: std.Io = undefined;
-
-fn executeTypescript(allocator: std.mem.Allocator, code: []const u8) ![]const u8 {
+fn executeTypescript(allocator: std.mem.Allocator, io: std.Io, code: []const u8) ![]const u8 {
     const argv = [_][]const u8{
         "npx", "tsx", "-e", code,
     };
-    const result = std.process.run(allocator, global_io, .{
+    const result = std.process.run(allocator, io, .{
         .argv = &argv,
     }) catch |err| {
         return try std.fmt.allocPrint(allocator, "Error executing script: {}", .{err});
@@ -271,7 +268,6 @@ pub fn main(init: std.process.Init) !void {
     // 1. Initialize an allocator for memory management
     var allocator = init.gpa;
     const io = init.io;
-    global_io = io;
 
     const api_key = loadApiKey(allocator, io, init.environ_map) catch |err| {
         if (err == error.ApiKeyMissing) {
