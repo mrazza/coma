@@ -478,11 +478,11 @@ test "Agent.executeTurnStreaming - model chunks streaming" {
         const Self = @This();
         chunks: std.ArrayList(types.StreamingChunk) = .empty,
         allocator: std.mem.Allocator,
-        
+
         fn init(alloc: std.mem.Allocator) Self {
             return .{ .allocator = alloc };
         }
-        
+
         fn deinit(self: *Self) void {
             self.chunks.deinit(self.allocator);
         }
@@ -623,11 +623,11 @@ test "Agent.executeTurnStreaming - with tool calls" {
         const Self = @This();
         chunks: std.ArrayList(types.StreamingChunk) = .empty,
         allocator: std.mem.Allocator,
-        
+
         fn init(alloc: std.mem.Allocator) Self {
             return .{ .allocator = alloc };
         }
-        
+
         fn deinit(self: *Self) void {
             self.chunks.deinit(self.allocator);
         }
