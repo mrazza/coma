@@ -69,7 +69,7 @@ fn executeToolCall(self: *Agent, tool_call: llm.types.ToolCall) anyerror!llm.typ
         return error.ToolNotFound;
     };
 
-    return try tool.execute(self.allocator, tool_call.id, tool_call.arguments);
+    return try tool.execute(self.allocator, self.io, tool_call.id, tool_call.arguments);
 }
 
 fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*StreamingContext) !types.TurnResult {

@@ -2,6 +2,7 @@ const std = @import("std");
 const llm = @import("llm");
 
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const Argument = llm.types.Argument;
 const ToolResult = llm.types.ToolResult;
 
@@ -17,7 +18,7 @@ pub const CallError = error{
 } || std.mem.Allocator.Error;
 
 const Tool = @This();
-const ToolExecuteFn = *const fn (allocator: Allocator, args: []const Argument) CallError![]const u8;
+const ToolExecuteFn = *const fn (allocator: Allocator, io: Io, args: []const Argument) CallError![]const u8;
 
 descriptor: llm.types.Tool,
 execute_fn: ToolExecuteFn,
@@ -25,14 +26,15 @@ execute_fn: ToolExecuteFn,
 /// Executes the tool with the given arguments.
 ///
 /// `allocator` is used to allocate memory for the result.
+/// `io` is the IO to use for the tool call.
 /// `id` is the identifier of the tool call.
 /// `args` is the list of arguments to pass to the tool function. All required arguments must be present.
 /// Order is not relevant. Unexpected arguments are ignored.
 ///
 /// Returns a `ToolResult` containing the result of the tool call. The caller is responsible
 /// for freeing the `ToolResult` by calling `deinit()`.
-pub fn execute(self: *const Tool, allocator: Allocator, id: []const u8, args: []const Argument) CallError!ToolResult {
-    const result = try self.execute_fn(allocator, args);
+pub fn execute(self: *const Tool, allocator: Allocator, io: Io, id: []const u8, args: []const Argument) CallError!ToolResult {
+    const result = try self.execute_fn(allocator, io, args);
     errdefer allocator.free(result);
     return ToolResult.initTakingResultOwnership(allocator, self.descriptor.name, id, result);
 }
@@ -44,9 +46,12 @@ pub fn execute(self: *const Tool, allocator: Allocator, id: []const u8, args: []
 /// `execute_fn` is the function to be called when the tool is executed.
 ///
 /// The function arguments must match the descriptor parameters and be in the same order.
-/// The function also takes an allocator as an argument. The allocator can be in any position
-/// provided the other arguments are still in the same order as the parameters in the
-/// descriptor.
+/// The function should also take an allocator as an argument which will be used, at least,
+/// to allocate its result. The allocator can be in any position provided the other arguments
+/// are still in the same order as the parameters in the descriptor.
+///
+/// Additionally, the function can optionally accept an Io struct which represents the IO to use
+/// during the tool call.
 ///
 /// The `execute_fn` should return the result of the tool call as a string and transfer
 /// ownership of the memory to the caller. The result will be passed to the LLM as the
@@ -154,7 +159,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         for (fn_info.params, 0..) |fn_param, i| {
             result_types[i] = fn_param.type.?;
 
-            if (fn_param.type.? != Allocator) {
+            if (fn_param.type.? != Allocator and fn_param.type.? != Io) {
                 if (param_idx >= descriptor_params.len) {
                     return .{ .err = .{ .code = ValidationError.ArgumentCountMismatch, .msg = "More arguments in function than descriptor." } };
                 }
@@ -181,7 +186,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
     const TupleType = @Tuple(&types);
     return .{
         .ok = struct {
-            pub fn call(allocator: Allocator, input_args: []const Argument) CallError![]const u8 {
+            pub fn call(allocator: Allocator, io: Io, input_args: []const Argument) CallError![]const u8 {
                 var argument_map: std.StringHashMap(*const Argument) = .init(allocator);
                 defer argument_map.deinit();
                 for (input_args) |*arg| try argument_map.put(arg.name, arg);
@@ -192,6 +197,8 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                     const T = types[func_idx];
                     if (T == Allocator) {
                         args[func_idx] = allocator;
+                    } else if (T == Io) {
+                        args[func_idx] = io;
                     } else {
                         const curr_descriptor = descriptor.parameters[descriptor_idx];
                         descriptor_idx += 1;
@@ -223,6 +230,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
 
 test init {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "example_function",
@@ -254,7 +262,7 @@ test init {
         .{ .name = "arg2", .value = .{ .string = "hello" } },
     };
 
-    var result = try tool.execute(allocator, "123", &args);
+    var result = try tool.execute(allocator, io, "123", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("example_function", result.tool_name);
@@ -455,6 +463,7 @@ test "makeExecuteFn - argument required in descriptor, optional in fn" {
 
 test execute {
     const testing_allocator = std.testing.allocator;
+    const io = std.testing.io;
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -479,7 +488,7 @@ test execute {
             .value = .{ .string = "value" },
         },
     };
-    var result = try tool.execute(testing_allocator, "id", args);
+    var result = try tool.execute(testing_allocator, io, "id", args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("test_tool", result.tool_name);
@@ -489,6 +498,7 @@ test execute {
 
 test "execute - unknown argument" {
     const testing_allocator = std.testing.allocator;
+    const io = std.testing.io;
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -513,11 +523,12 @@ test "execute - unknown argument" {
             .value = .{ .string = "value" },
         },
     };
-    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, "id", args));
+    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, io, "id", args));
 }
 
 test "execute - extra argument ignored" {
     const testing_allocator = std.testing.allocator;
+    const io = std.testing.io;
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -546,13 +557,14 @@ test "execute - extra argument ignored" {
             .value = .{ .string = "value2" },
         },
     };
-    var result = try tool.execute(testing_allocator, "id", args);
+    var result = try tool.execute(testing_allocator, io, "id", args);
     defer result.deinit();
     try std.testing.expectEqualStrings("value1", result.result);
 }
 
 test "execute - missing required argument" {
     const testing_allocator = std.testing.allocator;
+    const io = std.testing.io;
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -572,11 +584,12 @@ test "execute - missing required argument" {
     };
     const tool = Tool.init(desc, Impl.run);
     const args: []const Argument = &.{};
-    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, "id", args));
+    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, io, "id", args));
 }
 
 test "execute - missing optional argument" {
     const testing_allocator = std.testing.allocator;
+    const io = std.testing.io;
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -597,7 +610,7 @@ test "execute - missing optional argument" {
     };
     const tool = Tool.init(desc, Impl.run);
     const args: []const Argument = &.{};
-    var result = try tool.execute(testing_allocator, "id", args);
+    var result = try tool.execute(testing_allocator, io, "id", args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("test_tool", result.tool_name);
@@ -607,6 +620,7 @@ test "execute - missing optional argument" {
 
 test "execute - argument type mismatch" {
     const testing_allocator = std.testing.allocator;
+    const io = std.testing.io;
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -631,11 +645,12 @@ test "execute - argument type mismatch" {
             .value = .{ .integer = 10 },
         },
     };
-    try std.testing.expectError(CallError.ArgumentTypeMismatch, tool.execute(testing_allocator, "id", args));
+    try std.testing.expectError(CallError.ArgumentTypeMismatch, tool.execute(testing_allocator, io, "id", args));
 }
 
 test "execute - no Allocator parameter" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "no_allocator_func",
@@ -660,7 +675,7 @@ test "execute - no Allocator parameter" {
         .{ .name = "arg1", .value = .{ .string = "hello" } },
     };
 
-    var result = try tool.execute(allocator, "abc", &args);
+    var result = try tool.execute(allocator, io, "abc", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("no_allocator_func", result.tool_name);
@@ -670,6 +685,7 @@ test "execute - no Allocator parameter" {
 
 test "execute - Allocator as middle/last parameter" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "middle_last_allocator_func",
@@ -701,7 +717,7 @@ test "execute - Allocator as middle/last parameter" {
         .{ .name = "arg2", .value = .{ .string = "test" } },
     };
 
-    var result = try tool.execute(allocator, "xyz", &args);
+    var result = try tool.execute(allocator, io, "xyz", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("middle_last_allocator_func", result.tool_name);
@@ -711,6 +727,7 @@ test "execute - Allocator as middle/last parameter" {
 
 test "execute - multiple Allocator parameters" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "multi_allocator_func",
@@ -736,10 +753,83 @@ test "execute - multiple Allocator parameters" {
         .{ .name = "arg1", .value = .{ .integer = 7 } },
     };
 
-    var result = try tool.execute(allocator, "multi", &args);
+    var result = try tool.execute(allocator, io, "multi", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("multi_allocator_func", result.tool_name);
     try std.testing.expectEqualStrings("multi", result.id);
     try std.testing.expectEqualStrings("multi-7", result.result);
+}
+
+test "execute - Io parameter" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tool_descriptor: llm.types.Tool = .{
+        .name = "io_func",
+        .description = "Takes io and arguments",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "The first argument",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const tool_impl = struct {
+        pub fn io_func(tool_io: Io, tool_allocator: Allocator, arg1: []const u8) ![]const u8 {
+            _ = tool_io;
+            return try std.fmt.allocPrint(tool_allocator, "io-{s}", .{arg1});
+        }
+    };
+    const tool = comptime init(tool_descriptor, tool_impl.io_func);
+
+    const args = [_]Argument{
+        .{ .name = "arg1", .value = .{ .string = "test" } },
+    };
+
+    var result = try tool.execute(allocator, io, "io-test", &args);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("io_func", result.tool_name);
+    try std.testing.expectEqualStrings("io-test", result.id);
+    try std.testing.expectEqualStrings("io-test", result.result);
+}
+
+test "execute - multiple Io parameters" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tool_descriptor: llm.types.Tool = .{
+        .name = "multi_io_func",
+        .description = "Takes multiple io arguments",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "The first argument",
+                .type = .integer,
+                .required = true,
+            },
+        },
+    };
+    const tool_impl = struct {
+        pub fn multi_io_func(io1: Io, arg1: i64, io2: Io, tool_allocator: Allocator) ![]const u8 {
+            _ = io1;
+            _ = io2;
+            return try std.fmt.allocPrint(tool_allocator, "multi-io-{d}", .{arg1});
+        }
+    };
+    const tool = comptime init(tool_descriptor, tool_impl.multi_io_func);
+
+    const args = [_]Argument{
+        .{ .name = "arg1", .value = .{ .integer = 77 } },
+    };
+
+    var result = try tool.execute(allocator, io, "multi-io", &args);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("multi_io_func", result.tool_name);
+    try std.testing.expectEqualStrings("multi-io", result.id);
+    try std.testing.expectEqualStrings("multi-io-77", result.result);
 }
