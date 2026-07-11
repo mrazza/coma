@@ -3,10 +3,13 @@ const llm = @import("llm");
 const Tool = @import("./Tool.zig");
 const types = @import("./types.zig");
 
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const Agent = @This();
 
+allocator: Allocator,
+io: Io,
 provider: llm.Provider,
 tools: []const Tool,
 session_config: llm.types.SessionConfig,
@@ -19,19 +22,18 @@ pub fn deinit(self: *Agent) void {
     }
 }
 
-pub fn executeTurn(self: *Agent, allocator: Allocator, turn: types.Turn) !types.TurnResult {
-    return self.executeTurnInternal(allocator, turn, null);
+pub fn executeTurn(self: *Agent, turn: types.Turn) !types.TurnResult {
+    return self.executeTurnInternal(turn, null);
 }
 
 pub fn executeTurnStreaming(
     self: *Agent,
-    allocator: Allocator,
     turn: types.Turn,
     callback: types.StreamingCallback,
     callback_context: ?*anyopaque,
 ) !types.TurnResult {
     var agent_streaming_ctx: StreamingContext = .{ .callback = callback, .context = callback_context };
-    return self.executeTurnInternal(allocator, turn, &agent_streaming_ctx);
+    return self.executeTurnInternal(turn, &agent_streaming_ctx);
 }
 
 const StreamingContext = struct {
@@ -44,8 +46,9 @@ fn streamingCallbackProxy(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) voi
     streaming_ctx.callback(streaming_ctx.context, .{ .model_chunk = chunk });
 }
 
-fn executeTurnInternal(self: *Agent, allocator: Allocator, turn: types.Turn, callback_context: ?*StreamingContext) !types.TurnResult {
+fn executeTurnInternal(self: *Agent, turn: types.Turn, callback_context: ?*StreamingContext) !types.TurnResult {
     var next_steps: std.ArrayList(llm.types.Step) = .empty;
+    const allocator = self.allocator;
     defer next_steps.deinit(allocator);
     try next_steps.append(allocator, .{ .prompt = turn.prompt });
 
@@ -126,6 +129,7 @@ threadlocal var test_mock_provider: ?*testing_pkg.MockProvider = null;
 
 test "Agent.executeTurn - no tool calls" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     var mock_provider = testing_pkg.MockProvider{};
     const prov = mock_provider.provider();
 
@@ -135,6 +139,8 @@ test "Agent.executeTurn - no tool calls" {
     };
 
     var agent = Agent{
+        .allocator = allocator,
+        .io = io,
         .provider = prov,
         .tools = &.{},
         .session_config = .{
@@ -157,7 +163,7 @@ test "Agent.executeTurn - no tool calls" {
 
     const turn = types.Turn{ .prompt = "Hi agent" };
 
-    var result = try agent.executeTurn(allocator, turn);
+    var result = try agent.executeTurn(turn);
     defer result.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), mock_provider.execute_step_calls);
@@ -167,6 +173,7 @@ test "Agent.executeTurn - no tool calls" {
 
 test "Agent.executeTurnStreaming - no tool calls" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     var mock_provider = testing_pkg.MockProvider{};
     const prov = mock_provider.provider();
 
@@ -176,6 +183,8 @@ test "Agent.executeTurnStreaming - no tool calls" {
     };
 
     var agent = Agent{
+        .allocator = allocator,
+        .io = io,
         .provider = prov,
         .tools = &.{},
         .session_config = .{
@@ -211,7 +220,7 @@ test "Agent.executeTurnStreaming - no tool calls" {
         }
     }.cb;
 
-    var result = try agent.executeTurnStreaming(allocator, turn, callback, &dummy_ctx);
+    var result = try agent.executeTurnStreaming(turn, callback, &dummy_ctx);
     defer result.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), mock_provider.execute_step_streaming_calls);
@@ -237,6 +246,7 @@ const MockToolImpl = struct {
 
 test "Agent.executeTurn - executes tool call and runs again" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     var mock_provider = testing_pkg.MockProvider{};
     const prov = mock_provider.provider();
     test_mock_provider = &mock_provider;
@@ -264,6 +274,8 @@ test "Agent.executeTurn - executes tool call and runs again" {
     };
 
     var agent = Agent{
+        .allocator = allocator,
+        .io = io,
         .provider = prov,
         .tools = tools,
         .session_config = .{
@@ -299,7 +311,7 @@ test "Agent.executeTurn - executes tool call and runs again" {
 
     const turn = types.Turn{ .prompt = "Hi agent, run mock_tool" };
 
-    var result = try agent.executeTurn(allocator, turn);
+    var result = try agent.executeTurn(turn);
     defer result.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), mock_provider.execute_step_calls);
