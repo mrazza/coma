@@ -5,6 +5,7 @@ const agent_pkg = @import("agent");
 const Agent = agent_pkg.Agent;
 const Tool = agent_pkg.Tool;
 const types = agent_pkg.types;
+const acp_pkg = @import("acp");
 
 const coma = @import("coma");
 
@@ -319,6 +320,31 @@ pub fn main(init: std.process.Init) !void {
             },
         }, getWeather),
     };
+
+    const args = try init.minimal.args.toSlice(allocator);
+    defer allocator.free(args);
+
+    var run_acp = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--acp") or std.mem.eql(u8, arg, "acp")) {
+            run_acp = true;
+            break;
+        }
+    }
+
+    if (run_acp) {
+        var stdin_buffer: [1024]u8 = undefined;
+        var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
+        var stdout_buffer: [1024]u8 = undefined;
+        var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+
+        var server = acp_pkg.Server.init(&stdin_reader.interface, &stdout_writer.interface);
+        defer server.deinit();
+
+        std.debug.print("ACP Server: starting standard input/output loop...\n", .{});
+        try server.run(allocator, io);
+        return;
+    }
 
     const agent_config: types.AgentConfig = .{
         .model = selected_model.?,

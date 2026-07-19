@@ -1,6 +1,7 @@
+//! A mock HTTP client (`std.http.Client`) used for testing.
+
 const std = @import("std");
 
-/// A mock HTTP client used for testing.
 const MockHttpClient = @This();
 
 /// Represents an expected HTTP request and its corresponding mock response.

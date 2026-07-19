@@ -226,7 +226,7 @@ fn MakeProvider(comptime ClientType: type) type {
                 _ = reader.streamDelimiter(&line_writer.writer, '\n') catch |err| {
                     if (err == error.EndOfStream) break else return ProviderError.BadResponse;
                 };
-                _ = reader.toss(1);
+                reader.toss(1);
 
                 const line = std.mem.trimEnd(u8, line_writer.written(), "\r");
                 if (!std.mem.startsWith(u8, line, "data: ") or

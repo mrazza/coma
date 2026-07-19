@@ -1,3 +1,5 @@
+//! A mock implementation of the `llm.Provider` interface for testing.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const llm = @import("llm");
@@ -11,7 +13,6 @@ const SessionConfig = types.SessionConfig;
 const Step = types.Step;
 const StepOutcome = types.StepOutcome;
 
-/// A mock implementation of the `llm.Provider` interface for testing.
 const MockProvider = @This();
 
 /// Tracks the number of times `listModels` was called.
@@ -40,7 +41,6 @@ execute_step_results: ?[]const (Provider.ProviderError!StepOutcome) = null,
 execute_step_results_loop: bool = true,
 /// Optional sequence of streaming chunks to emit during successive `executeStepStreaming` calls.
 execute_step_streaming_chunks: ?[]const []const types.StreamingChunk = null,
-
 
 const vtable = Provider.VTable{
     .list_models = MockProvider.list_models,
