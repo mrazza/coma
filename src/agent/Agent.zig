@@ -1,7 +1,7 @@
 const std = @import("std");
 const llm = @import("llm");
-const Tool = @import("./Tool.zig");
-const types = @import("./types.zig");
+const Tool = @import("Tool.zig");
+const types = @import("types.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -356,7 +356,6 @@ test "Agent.executeTurn - executes tool call and runs again" {
     };
     mock_provider.execute_step_results = &outcomes;
 
-
     const turn = types.Turn{ .prompt = "Hi agent, run mock_tool" };
 
     var result = try agent.executeTurn(turn);
@@ -410,7 +409,7 @@ test "Agent.executeTurnStreaming - model chunks streaming" {
     };
 
     const chunks = [_]llm.types.StreamingChunk{ chunk1, chunk2 };
-    const chunks_list = [_][]const llm.types.StreamingChunk{ &chunks };
+    const chunks_list = [_][]const llm.types.StreamingChunk{&chunks};
     mock_provider.execute_step_streaming_chunks = &chunks_list;
 
     const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello world!" }}, &.{}, &.{});
@@ -606,7 +605,6 @@ test "Agent.executeTurn - tool call error cleanup" {
         .{ .result = step_result, .continuation = step_continuation },
     };
     mock_provider.execute_step_results = &outcomes;
-
 
     const turn = types.Turn{ .prompt = "Run error_tool" };
     try std.testing.expectError(error.ArgumentTypeMismatch, agent.executeTurn(turn));

@@ -1,3 +1,5 @@
+//! An interface for an LLM provider.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const types = @import("types.zig");
@@ -9,7 +11,6 @@ const StreamingCallback = types.StreamingCallback;
 const StepContinuation = types.StepContinuation;
 const StepOutcome = types.StepOutcome;
 
-/// An interface for an LLM provider.
 const Provider = @This();
 
 /// Opaque pointer to the provider implementation's context.
