@@ -96,6 +96,14 @@ pub const Implementation = struct {
 /// Non-breaking changes should be introduced via capabilities.
 pub const ProtocolVersion = u32;
 
+/// A unique identifier for a conversation session between a client and agent.
+///
+/// Sessions maintain their own context, conversation history, and state,
+/// allowing multiple independent interactions with the same agent.
+///
+/// See protocol docs: [Session ID](https://agentclientprotocol.com/protocol/session-setup#session-id)
+pub const SessionId = []const u8;
+
 test "RequestId json parsing - integer" {
     const allocator = std.testing.allocator;
     const parsed = try std.json.parseFromSlice(RequestId, allocator, "42", .{});

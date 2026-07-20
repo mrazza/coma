@@ -14,11 +14,15 @@ pub const AcpProtocolError = error{
 
 const Server = @This();
 
+allocator: Allocator,
+io: Io,
 input_reader: *Io.Reader,
 output_writer: *Io.Writer,
 
-pub fn init(input_reader: *Io.Reader, output_writer: *Io.Writer) Server {
+pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_writer: *Io.Writer) Server {
     return .{
+        .allocator = allocator,
+        .io = io,
         .input_reader = input_reader,
         .output_writer = output_writer,
     };
@@ -26,13 +30,13 @@ pub fn init(input_reader: *Io.Reader, output_writer: *Io.Writer) Server {
 
 pub fn deinit(_: *Server) void {}
 
-pub fn run(self: *Server, allocator: Allocator, io: Io) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
+pub fn run(self: *Server) !void {
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
     while (true) {
-        try io.checkCancel();
+        try self.io.checkCancel();
         _ = arena.reset(.retain_capacity);
 
         var json_rpc_reader = JsonRpcReader.init(arena_allocator, self.input_reader);
@@ -47,12 +51,14 @@ pub fn run(self: *Server, allocator: Allocator, io: Io) !void {
 
                 const reply: agent_api.AgentResponse = .{
                     .id = client_request.id,
-                    .result = .{ .initialize = .{
-                        .protocolVersion = 1,
-                        .agentCapabilities = null,
-                        .agentInfo = null,
-                        .authMethods = {},
-                    } },
+                    .result = .{
+                        .initialize = .{
+                            .protocolVersion = 1,
+                            .agentCapabilities = null,
+                            .agentInfo = null,
+                            .authMethods = {},
+                        },
+                    },
                 };
                 var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
                 defer json_rpc_writer.deinit();
@@ -61,6 +67,19 @@ pub fn run(self: *Server, allocator: Allocator, io: Io) !void {
             },
             .session_new => {
                 std.debug.print("Got session_new request: {any}\n", .{client_request});
+
+                const reply: agent_api.AgentResponse = .{
+                    .id = client_request.id,
+                    .result = .{
+                        .session_new = .{
+                            .sessionId = "test",
+                        },
+                    },
+                };
+                var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
+                defer json_rpc_writer.deinit();
+
+                try json_rpc_writer.writeJsonObject(reply, .{ .use_headers = false });
             },
             .unknown => {
                 std.debug.print("Unknown message: {any}\n", .{client_request});

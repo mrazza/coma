@@ -50,7 +50,7 @@ pub const ClientRequest = struct {
         const method = try std.json.innerParseFromValue(RequestMethod, allocator, source.object.get("method") orelse return error.MissingField, options);
         const params: ClientRequestParams = switch (method) {
             .initialize => .{ .initialize = try std.json.innerParseFromValue(InitializeRequest, allocator, source.object.get("params") orelse return error.MissingField, options) },
-            .session_new => .{ .session_new = {} },
+            .session_new => .{ .session_new = try std.json.innerParseFromValue(NewSessionRequest, allocator, source.object.get("params") orelse return error.MissingField, options) },
             .unknown => .{ .unknown = {} },
         };
         return ClientRequest{
@@ -67,7 +67,7 @@ pub const ClientRequest = struct {
 /// The filled member is dependent on the method type.
 pub const ClientRequestParams = union(RequestMethod) {
     initialize: InitializeRequest,
-    session_new: void,
+    session_new: NewSessionRequest,
     unknown,
 };
 
@@ -134,6 +134,94 @@ pub const SessionConfigOptionsCapabilities = struct {
     /// `configOptions`, and the client may send `session/set_config_option`
     /// requests with `type: "boolean"` and a boolean `value`.
     boolean: bool = false,
+};
+
+/// Request parameters for creating a new session.
+///
+/// See protocol docs: [Session Setup](https://agentclientprotocol.com/protocol/session-setup#creating-a-session)
+pub const NewSessionRequest = struct {
+    /// The working directory for this session. Must be an absolute path.
+    cwd: []const u8,
+    /// Additional workspace roots for this session. Each path must be absolute.
+    ///
+    /// These expand the session's filesystem scope without changing `cwd`, which
+    /// remains the base for relative paths. When omitted or empty, no
+    /// additional roots are activated for the new session.
+    additionalDirectories: ?[][]const u8 = null,
+    /// List of MCP (Model Context Protocol) servers the agent should connect to.
+    mcpServers: []McpServer,
+};
+
+/// MCP server transport types.
+pub const McpServerTypes = enum {
+    /// HTTP-based MCP server.
+    http,
+    /// Server-Sent Events (SSE) based MCP server.
+    sse,
+    /// ACP-based MCP server.
+    acp,
+    /// Stdio-based MCP server (default).
+    stdio,
+};
+
+/// Configuration for connecting to an MCP (Model Context Protocol) server.
+///
+/// MCP servers provide tools and context that the agent can use when
+/// processing prompts.
+///
+/// The default MCP Server type is `stdio`.
+///
+/// See protocol docs: [MCP Servers](https://agentclientprotocol.com/protocol/session-setup#mcp-servers)
+pub const McpServer = union(McpServerTypes) {
+    /// HTTP-based MCP server.
+    http: void,
+    /// Server-Sent Events (SSE) based MCP server.
+    sse: void,
+    /// ACP-based MCP server.
+    acp: void,
+    /// Stdio-based MCP server (default).
+    stdio: McpServerStdio,
+
+    pub fn jsonParse(allocator: Allocator, source: anytype, options: std.json.ParseOptions) !McpServer {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: Allocator, source: std.json.Value, options: std.json.ParseOptions) !McpServer {
+        if (source != .object) return error.UnexpectedToken;
+        const server_type = if (source.object.get("type")) |type_val|
+            try std.json.innerParseFromValue(McpServerTypes, allocator, type_val, options)
+        else
+            McpServerTypes.stdio;
+        var stdio_options = options;
+        stdio_options.ignore_unknown_fields = true;
+        return switch (server_type) {
+            .http => .{ .http = {} },
+            .sse => .{ .sse = {} },
+            .acp => .{ .acp = {} },
+            .stdio => .{ .stdio = try std.json.innerParseFromValue(McpServerStdio, allocator, source, stdio_options) },
+        };
+    }
+};
+
+/// Stdio transport configuration for an MCP server.
+pub const McpServerStdio = struct {
+    /// Human-readable name identifying this MCP server.
+    name: []const u8,
+    /// Absolute path to the MCP server executable.
+    command: []const u8,
+    /// Command-line arguments to pass to the MCP server.
+    args: [][]const u8,
+    /// Environment variables to set when launching the MCP server.
+    env: []EnvVariable,
+};
+
+/// An environment variable to set when launching an MCP server.
+pub const EnvVariable = struct {
+    /// The name of the environment variable.
+    name: []const u8,
+    /// The value of the environment variable.
+    value: []const u8,
 };
 
 test "json parse initialize ClientRequest" {
@@ -203,4 +291,84 @@ test "json parse RequestMethod mapping" {
         defer parsed.deinit();
         try std.testing.expectEqual(RequestMethod.unknown, parsed.value);
     }
+}
+
+test "json parse McpServer stdio" {
+    const allocator = std.testing.allocator;
+    const json_str =
+        \\{
+        \\  "name": "filesystem",
+        \\  "command": "/path/to/mcp-server",
+        \\  "args": ["--stdio"],
+        \\  "env": []
+        \\}
+    ;
+
+    const parsed = try std.json.parseFromSlice(McpServer, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    const server = parsed.value;
+    try std.testing.expectEqual(McpServerTypes.stdio, @as(McpServerTypes, server));
+    try std.testing.expectEqualStrings("filesystem", server.stdio.name);
+    try std.testing.expectEqualStrings("/path/to/mcp-server", server.stdio.command);
+    try std.testing.expectEqual(1, server.stdio.args.len);
+    try std.testing.expectEqualStrings("--stdio", server.stdio.args[0]);
+    try std.testing.expectEqual(0, server.stdio.env.len);
+}
+
+test "json parse McpServer http" {
+    const allocator = std.testing.allocator;
+    const json_str =
+        \\{
+        \\  "type": "http"
+        \\}
+    ;
+
+    const parsed = try std.json.parseFromSlice(McpServer, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    const server = parsed.value;
+    try std.testing.expectEqual(McpServerTypes.http, @as(McpServerTypes, server));
+}
+
+test "json parse session/new ClientRequest with McpServer" {
+    const allocator = std.testing.allocator;
+    const json_str =
+        \\{
+        \\  "jsonrpc": "2.0",
+        \\  "id": 1,
+        \\  "method": "session/new",
+        \\  "params": {
+        \\    "cwd": "/home/user/project",
+        \\    "mcpServers": [
+        \\      {
+        \\        "name": "filesystem",
+        \\        "command": "/path/to/mcp-server",
+        \\        "args": ["--stdio"],
+        \\        "env": []
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const parsed = try std.json.parseFromSlice(ClientRequest, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    const request = parsed.value;
+    try std.testing.expectEqualStrings("2.0", request.jsonrpc);
+    try std.testing.expectEqual(RequestMethod.session_new, request.method);
+    try std.testing.expectEqual(shared_api.RequestId{ .integer = 1 }, request.id);
+
+    const session_params = request.params.session_new;
+    try std.testing.expectEqualStrings("/home/user/project", session_params.cwd);
+    try std.testing.expectEqual(1, session_params.mcpServers.len);
+
+    const mcp_server = session_params.mcpServers[0];
+    try std.testing.expectEqual(McpServerTypes.stdio, @as(McpServerTypes, mcp_server));
+    try std.testing.expectEqualStrings("filesystem", mcp_server.stdio.name);
+    try std.testing.expectEqualStrings("/path/to/mcp-server", mcp_server.stdio.command);
+    try std.testing.expectEqual(1, mcp_server.stdio.args.len);
+    try std.testing.expectEqualStrings("--stdio", mcp_server.stdio.args[0]);
+    try std.testing.expectEqual(0, mcp_server.stdio.env.len);
 }
