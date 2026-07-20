@@ -15,6 +15,7 @@ pub const AgentResponse = struct {
 pub const AgentResponseResult = union(enum) {
     initialize: InitializeResponse,
     session_new: NewSessionResponse,
+    session_prompt: PromptResponse,
 
     pub fn jsonStringify(self: AgentResponseResult, jw: anytype) !void {
         switch (self) {
@@ -120,6 +121,91 @@ pub const SessionCapabilities = struct {};
 
 /// Authentication-related capabilities supported by the agent.
 pub const AgentAuthCapabilities = struct {};
+
+pub const StopReason = enum {
+    end_turn,
+    max_tokens,
+    max_turn_requests,
+    refusal,
+    cancelled,
+};
+
+pub const PromptResponse = struct {
+    stopReason: StopReason,
+};
+
+/// Possible set of notification methods.
+pub const AgentNotificationMethod = enum {
+    session_update,
+
+    pub fn jsonStringify(self: AgentNotificationMethod, jw: anytype) !void {
+        try jw.write(shared_api.stringifyEnum(self));
+    }
+};
+
+/// A JSON-RPC notification object.
+pub const AgentNotification = struct {
+    /// The notification method name.
+    method: AgentNotificationMethod,
+    /// Method-specific notification parameters.
+    params: AgentNotificationParams,
+};
+
+/// Union for method-specific notification parameters; split by method type.
+pub const AgentNotificationParams = union(AgentNotificationMethod) {
+    session_update: SessionNotificationParams,
+
+    pub fn jsonStringify(self: AgentNotificationParams, jw: anytype) !void {
+        switch (self) {
+            inline else => |payload| {
+                try jw.write(payload);
+            },
+        }
+    }
+};
+
+/// Notification containing a session update from the agent.
+///
+/// Used to stream real-time progress and results during prompt processing.
+///
+/// See protocol docs: [Agent Reports Output](https://agentclientprotocol.com/protocol/prompt-turn#3-agent-reports-output)
+pub const SessionNotificationParams = struct {
+    /// The ID of the session that is receiving an update.
+    sessionId: shared_api.SessionId,
+    /// The update to send to the session
+    update: SessionUpdate,
+};
+
+/// Different types of updates that can be sent during session processing.
+///
+/// These updates provide real-time feedback about the agent's progress.
+///
+/// See protocol docs: [Agent Reports Output](https://agentclientprotocol.com/protocol/prompt-turn#3-agent-reports-output)
+pub const SessionUpdate = union(enum) {
+    /// Agent message output chunk.
+    agent_message_chunk: ContentChunk,
+    /// Agent thinking chunk.
+    agent_thought_chunk: ContentChunk,
+
+    pub fn jsonStringify(self: SessionUpdate, jw: anytype) !void {
+        switch (self) {
+            inline else => |payload| {
+                try jw.beginObject();
+                try jw.objectField("sessionUpdate");
+                try jw.write(@tagName(self));
+                try shared_api.jsonStringifyFields(payload, jw);
+                try jw.endObject();
+            },
+        }
+    }
+};
+
+/// A streamed item of content.
+pub const ContentChunk = struct {
+    content: shared_api.ContentBlock,
+
+    // TODO(razza): Do we need messageId?
+};
 
 /// Serializes a value into a newly allocated JSON string.
 ///
@@ -311,4 +397,100 @@ test "json stringify AgentCapabilities minimal vs full" {
     }
 }
 
+test "json stringify AgentResponse session_prompt" {
+    const allocator = std.testing.allocator;
+
+    const response: AgentResponse = .{
+        .id = .{ .integer = 10 },
+        .result = .{
+            .session_prompt = .{
+                .stopReason = .end_turn,
+            },
+        },
+    };
+
+    const json_str = try stringify(allocator, response);
+    defer allocator.free(json_str);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(i64, 10), parsed.value.object.get("id").?.integer);
+
+    const result = parsed.value.object.get("result").?.object;
+    try std.testing.expectEqualStrings("end_turn", result.get("stopReason").?.string);
+}
+
+test "json stringify AgentNotification session_update message chunk" {
+    const allocator = std.testing.allocator;
+
+    const notification: AgentNotification = .{
+        .method = .session_update,
+        .params = .{
+            .session_update = .{
+                .sessionId = "sess-789",
+                .update = .{
+                    .agent_message_chunk = .{
+                        .content = .{
+                            .text = "Hello world chunk",
+                        },
+                    },
+                },
+            },
+        },
+    };
+
+    const json_str = try stringify(allocator, notification);
+    defer allocator.free(json_str);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("session/update", parsed.value.object.get("method").?.string);
+
+    const params = parsed.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("sess-789", params.get("sessionId").?.string);
+
+    const update = params.get("update").?.object;
+    try std.testing.expectEqualStrings("agent_message_chunk", update.get("sessionUpdate").?.string);
+
+    const content = update.get("content").?.object;
+    try std.testing.expectEqualStrings("text", content.get("type").?.string);
+    try std.testing.expectEqualStrings("Hello world chunk", content.get("text").?.string);
+}
+
+test "json stringify AgentNotification session_update thought chunk" {
+    const allocator = std.testing.allocator;
+
+    const notification: AgentNotification = .{
+        .method = .session_update,
+        .params = .{
+            .session_update = .{
+                .sessionId = "sess-789",
+                .update = .{
+                    .agent_thought_chunk = .{
+                        .content = .{
+                            .text = "Thinking...",
+                        },
+                    },
+                },
+            },
+        },
+    };
+
+    const json_str = try stringify(allocator, notification);
+    defer allocator.free(json_str);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("session/update", parsed.value.object.get("method").?.string);
+
+    const params = parsed.value.object.get("params").?.object;
+    const update = params.get("update").?.object;
+    try std.testing.expectEqualStrings("agent_thought_chunk", update.get("sessionUpdate").?.string);
+
+    const content = update.get("content").?.object;
+    try std.testing.expectEqualStrings("Thinking...", content.get("text").?.string);
+}
 

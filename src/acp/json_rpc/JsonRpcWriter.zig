@@ -181,4 +181,3 @@ test "writeJsonObject - consecutive calls with headers" {
         "Content-Length: 47\r\n\r\n{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"id\":2}";
     try std.testing.expectEqualStrings(expected, buffer.written());
 }
-
