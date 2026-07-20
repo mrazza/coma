@@ -12,7 +12,7 @@ allocator: Allocator,
 sessions: std.StringHashMap(*SessionState),
 session_counter: u64,
 
-const SessionState = struct {
+pub const SessionState = struct {
     id: []const u8,
     session: agent.Session,
 };
