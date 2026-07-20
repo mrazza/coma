@@ -338,11 +338,11 @@ pub fn main(init: std.process.Init) !void {
         var stdout_buffer: [1024]u8 = undefined;
         var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
 
-        var server = acp_pkg.Server.init(&stdin_reader.interface, &stdout_writer.interface);
+        var server = acp_pkg.Server.init(allocator, io, &stdin_reader.interface, &stdout_writer.interface);
         defer server.deinit();
 
         std.debug.print("ACP Server: starting standard input/output loop...\n", .{});
-        try server.run(allocator, io);
+        try server.run();
         return;
     }
 
