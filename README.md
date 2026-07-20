@@ -52,15 +52,15 @@ var http_client: std.http.Client = .{ .allocator = allocator, .io = io };
 var gemini_client = try provider.Gemini.init(allocator, &http_client, api_key);
 var client = gemini_client.provider();
 
-const agent_config: types.AgentConfig = .{
+const session_config: types.SessionConfig = .{
     .model = selected_model,
     .tools = &[_]Tool{ weather_tool },
 };
 
-var agent = try Agent.init(allocator, io, client, agent_config);
-defer agent.deinit();
+var session = try Session.init(allocator, io, client, session_config);
+defer session.deinit();
 
-const result = try agent.executeTurn(.{ .prompt = "What is the weather in 90210?" });
+const result = try session.executeTurn(.{ .prompt = "What is the weather in 90210?" });
 ```
 
 ## Project Structure
