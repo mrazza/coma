@@ -1,3 +1,6 @@
+//! Contains structs and functionality shared by both ACP client (requests) and
+//! ACP servers (responses).
+
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;

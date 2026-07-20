@@ -1,8 +1,11 @@
 const std = @import("std");
+const agent = @import("agent");
 const agent_api = @import("agent_api.zig");
 const client_api = @import("client_api.zig");
 const JsonRpcReader = @import("json_rpc/JsonRpcReader.zig");
 const JsonRpcWriter = @import("json_rpc/JsonRpcWriter.zig");
+const SessionStorage = @import("SessionStorage.zig");
+pub const Config = @import("Config.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -18,17 +21,23 @@ allocator: Allocator,
 io: Io,
 input_reader: *Io.Reader,
 output_writer: *Io.Writer,
+sessions: SessionStorage,
+acp_config: Config,
 
-pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_writer: *Io.Writer) Server {
+pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_writer: *Io.Writer, acp_config: Config) Server {
     return .{
         .allocator = allocator,
         .io = io,
         .input_reader = input_reader,
         .output_writer = output_writer,
+        .sessions = .init(allocator),
+        .acp_config = acp_config,
     };
 }
 
-pub fn deinit(_: *Server) void {}
+pub fn deinit(self: *Server) void {
+    self.sessions.deinit();
+}
 
 pub fn run(self: *Server) !void {
     var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -68,11 +77,18 @@ pub fn run(self: *Server) !void {
             .session_new => {
                 std.debug.print("Got session_new request: {any}\n", .{client_request});
 
+                const session_state = try self.sessions.createSession(.{
+                    self.allocator,
+                    self.io,
+                    self.acp_config.provider,
+                    self.acp_config.default_session_config,
+                });
+
                 const reply: agent_api.AgentResponse = .{
                     .id = client_request.id,
                     .result = .{
                         .session_new = .{
-                            .sessionId = "test",
+                            .sessionId = session_state.id,
                         },
                     },
                 };

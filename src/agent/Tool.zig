@@ -1,3 +1,5 @@
+//! The definition of a Tool an Agent can call.
+
 const std = @import("std");
 const llm = @import("llm");
 

@@ -321,6 +321,11 @@ pub fn main(init: std.process.Init) !void {
         }, getWeather),
     };
 
+    const session_config: types.SessionConfig = .{
+        .model = selected_model.?,
+        .tools = tools,
+    };
+
     const args = try init.minimal.args.toSlice(allocator);
     defer allocator.free(args);
 
@@ -338,18 +343,17 @@ pub fn main(init: std.process.Init) !void {
         var stdout_buffer: [1024]u8 = undefined;
         var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
 
-        var server = acp_pkg.Server.init(allocator, io, &stdin_reader.interface, &stdout_writer.interface);
+        const acp_config = acp_pkg.Server.Config{
+            .provider = gemini_client.provider(),
+            .default_session_config = session_config,
+        };
+        var server = acp_pkg.Server.init(allocator, io, &stdin_reader.interface, &stdout_writer.interface, acp_config);
         defer server.deinit();
 
         std.debug.print("ACP Server: starting standard input/output loop...\n", .{});
         try server.run();
         return;
     }
-
-    const session_config: types.SessionConfig = .{
-        .model = selected_model.?,
-        .tools = tools,
-    };
 
     var session: Session = try .init(allocator, io, client, session_config);
     defer session.deinit();
