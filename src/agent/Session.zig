@@ -1,3 +1,9 @@
+//! Represents a single agentic session with the specified provider.
+//!
+//! A session is a single context window with an agent model as well
+//! as the configuration associated with that context window (tools,
+//! system prompt, etc).
+
 const std = @import("std");
 const llm = @import("llm");
 const Tool = @import("Tool.zig");

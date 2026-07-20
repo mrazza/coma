@@ -45,13 +45,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const acp = b.addModule("acp", .{
-        .root_source_file = b.path("src/acp/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{},
-    });
-
     const agent = b.addModule("agent", .{
         .root_source_file = b.path("src/agent/root.zig"),
         .target = target,
@@ -59,6 +52,17 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "llm", .module = llm },
             .{ .name = "provider", .module = provider },
+            .{ .name = "testing", .module = testing },
+        },
+    });
+
+    const acp = b.addModule("acp", .{
+        .root_source_file = b.path("src/acp/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "agent", .module = agent },
+            .{ .name = "llm", .module = llm },
             .{ .name = "testing", .module = testing },
         },
     });
@@ -258,13 +262,6 @@ fn createTestSuites(
         },
     });
 
-    const acp = b.createModule(.{
-        .root_source_file = b.path("src/acp/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{},
-    });
-
     const agent = b.createModule(.{
         .root_source_file = b.path("src/agent/root.zig"),
         .target = target,
@@ -272,6 +269,17 @@ fn createTestSuites(
         .imports = &.{
             .{ .name = "llm", .module = llm },
             .{ .name = "provider", .module = provider },
+            .{ .name = "testing", .module = testing },
+        },
+    });
+
+    const acp = b.createModule(.{
+        .root_source_file = b.path("src/acp/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "agent", .module = agent },
+            .{ .name = "llm", .module = llm },
             .{ .name = "testing", .module = testing },
         },
     });
