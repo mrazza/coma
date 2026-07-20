@@ -15,6 +15,12 @@ pub const AcpProtocolError = error{
     MissingId,
 } || std.json.Error;
 
+const ServerSessionContext = struct {
+    server: *Server,
+    session_state: *SessionStorage.SessionState,
+    json_rpc_writer: *JsonRpcWriter,
+};
+
 const Server = @This();
 
 allocator: Allocator,
@@ -37,6 +43,69 @@ pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_write
 
 pub fn deinit(self: *Server) void {
     self.sessions.deinit();
+}
+
+fn handleTurnUpdate(ctx: ?*anyopaque, chunk: agent.types.StreamingChunk) void {
+    const stream_ctx: *ServerSessionContext = @ptrCast(@alignCast(ctx));
+    const session_state = stream_ctx.session_state;
+    const json_rpc_writer = stream_ctx.json_rpc_writer;
+
+    switch (chunk) {
+        .model_chunk => |model_chunk| {
+            switch (model_chunk.event) {
+                .step_event => |step| {
+                    switch (step.event) {
+                        .delta => |delta| {
+                            switch (delta) {
+                                .model_output => |mo| {
+                                    const output_reply: agent_api.AgentNotification = .{
+                                        .method = .session_update,
+                                        .params = .{
+                                            .session_update = .{
+                                                .sessionId = session_state.id,
+                                                .update = .{
+                                                    .agent_message_chunk = .{
+                                                        .content = .{
+                                                            .text = mo.text,
+                                                        },
+                                                    },
+                                                },
+                                            },
+                                        },
+                                    };
+
+                                    json_rpc_writer.writeJsonObject(output_reply, .{ .use_headers = false }) catch {};
+                                },
+                                .thought => |thought| {
+                                    const thinking_reply: agent_api.AgentNotification = .{
+                                        .method = .session_update,
+                                        .params = .{
+                                            .session_update = .{
+                                                .sessionId = session_state.id,
+                                                .update = .{
+                                                    .agent_thought_chunk = .{
+                                                        .content = .{
+                                                            .text = thought.text,
+                                                        },
+                                                    },
+                                                },
+                                            },
+                                        },
+                                    };
+
+                                    json_rpc_writer.writeJsonObject(thinking_reply, .{ .use_headers = false }) catch {};
+                                },
+                                else => {},
+                            }
+                        },
+                        else => {},
+                    }
+                },
+                else => {},
+            }
+        },
+        else => {},
+    }
 }
 
 pub fn run(self: *Server) !void {
@@ -101,39 +170,16 @@ pub fn run(self: *Server) !void {
                 std.debug.print("Got session_prompt request: {any}\n", .{client_request.params.session_prompt.prompt});
 
                 const session = try self.sessions.getSession(client_request.params.session_prompt.sessionId);
-                const result = try session.session.executeTurn(.{ .prompt = client_request.params.session_prompt.prompt[0].text });
+                var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
+                defer json_rpc_writer.deinit();
 
-                const thinking_reply: agent_api.AgentNotification = .{
-                    .method = .session_update,
-                    .params = .{
-                        .session_update = .{
-                            .sessionId = session.id,
-                            .update = .{
-                                .agent_thought_chunk = .{
-                                    .content = .{
-                                        .text = result.final_step.thoughts[0].text,
-                                    },
-                                },
-                            },
-                        },
-                    },
+                var ctx: ServerSessionContext = .{
+                    .server = self,
+                    .session_state = session,
+                    .json_rpc_writer = &json_rpc_writer,
                 };
 
-                const content_reply: agent_api.AgentNotification = .{
-                    .method = .session_update,
-                    .params = .{
-                        .session_update = .{
-                            .sessionId = session.id,
-                            .update = .{
-                                .agent_message_chunk = .{
-                                    .content = .{
-                                        .text = result.final_step.model_output[0].text,
-                                    },
-                                },
-                            },
-                        },
-                    },
-                };
+                _ = try session.session.executeTurnStreaming(.{ .prompt = client_request.params.session_prompt.prompt[0].text }, handleTurnUpdate, &ctx);
 
                 const reply: agent_api.AgentResponse = .{
                     .id = client_request.id,
@@ -144,11 +190,6 @@ pub fn run(self: *Server) !void {
                     },
                 };
 
-                var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
-                defer json_rpc_writer.deinit();
-
-                try json_rpc_writer.writeJsonObject(thinking_reply, .{ .use_headers = false });
-                try json_rpc_writer.writeJsonObject(content_reply, .{ .use_headers = false });
                 try json_rpc_writer.writeJsonObject(reply, .{ .use_headers = false });
             },
             .unknown => {
