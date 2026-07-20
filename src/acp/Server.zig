@@ -97,6 +97,60 @@ pub fn run(self: *Server) !void {
 
                 try json_rpc_writer.writeJsonObject(reply, .{ .use_headers = false });
             },
+            .session_prompt => {
+                std.debug.print("Got session_prompt request: {any}\n", .{client_request.params.session_prompt.prompt});
+
+                const session = try self.sessions.getSession(client_request.params.session_prompt.sessionId);
+                const result = try session.session.executeTurn(.{ .prompt = client_request.params.session_prompt.prompt[0].text });
+
+                const thinking_reply: agent_api.AgentNotification = .{
+                    .method = .session_update,
+                    .params = .{
+                        .session_update = .{
+                            .sessionId = session.id,
+                            .update = .{
+                                .agent_thought_chunk = .{
+                                    .content = .{
+                                        .text = result.final_step.thoughts[0].text,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                };
+
+                const content_reply: agent_api.AgentNotification = .{
+                    .method = .session_update,
+                    .params = .{
+                        .session_update = .{
+                            .sessionId = session.id,
+                            .update = .{
+                                .agent_message_chunk = .{
+                                    .content = .{
+                                        .text = result.final_step.model_output[0].text,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                };
+
+                const reply: agent_api.AgentResponse = .{
+                    .id = client_request.id,
+                    .result = .{
+                        .session_prompt = .{
+                            .stopReason = agent_api.StopReason.end_turn,
+                        },
+                    },
+                };
+
+                var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
+                defer json_rpc_writer.deinit();
+
+                try json_rpc_writer.writeJsonObject(thinking_reply, .{ .use_headers = false });
+                try json_rpc_writer.writeJsonObject(content_reply, .{ .use_headers = false });
+                try json_rpc_writer.writeJsonObject(reply, .{ .use_headers = false });
+            },
             .unknown => {
                 std.debug.print("Unknown message: {any}\n", .{client_request});
             },

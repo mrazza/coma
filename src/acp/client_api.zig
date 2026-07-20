@@ -12,6 +12,8 @@ pub const RequestMethod = enum {
     initialize,
     /// New Session method (mapped to "session/new") used to create a new session.
     session_new,
+    /// Session Prompt method (mapped to "session/prompt") used to send a prompt to the agent.
+    session_prompt,
     /// The request method is not recognized.
     unknown,
 
@@ -51,6 +53,7 @@ pub const ClientRequest = struct {
         const params: ClientRequestParams = switch (method) {
             .initialize => .{ .initialize = try std.json.innerParseFromValue(InitializeRequest, allocator, source.object.get("params") orelse return error.MissingField, options) },
             .session_new => .{ .session_new = try std.json.innerParseFromValue(NewSessionRequest, allocator, source.object.get("params") orelse return error.MissingField, options) },
+            .session_prompt => .{ .session_prompt = try std.json.innerParseFromValue(PromptRequest, allocator, source.object.get("params") orelse return error.MissingField, options) },
             .unknown => .{ .unknown = {} },
         };
         return ClientRequest{
@@ -68,6 +71,7 @@ pub const ClientRequest = struct {
 pub const ClientRequestParams = union(RequestMethod) {
     initialize: InitializeRequest,
     session_new: NewSessionRequest,
+    session_prompt: PromptRequest,
     unknown,
 };
 
@@ -153,7 +157,7 @@ pub const NewSessionRequest = struct {
 };
 
 /// MCP server transport types.
-pub const McpServerTypes = enum {
+pub const McpServerType = enum {
     /// HTTP-based MCP server.
     http,
     /// Server-Sent Events (SSE) based MCP server.
@@ -172,7 +176,7 @@ pub const McpServerTypes = enum {
 /// The default MCP Server type is `stdio`.
 ///
 /// See protocol docs: [MCP Servers](https://agentclientprotocol.com/protocol/session-setup#mcp-servers)
-pub const McpServer = union(McpServerTypes) {
+pub const McpServer = union(McpServerType) {
     /// HTTP-based MCP server.
     http: void,
     /// Server-Sent Events (SSE) based MCP server.
@@ -190,16 +194,14 @@ pub const McpServer = union(McpServerTypes) {
     pub fn jsonParseFromValue(allocator: Allocator, source: std.json.Value, options: std.json.ParseOptions) !McpServer {
         if (source != .object) return error.UnexpectedToken;
         const server_type = if (source.object.get("type")) |type_val|
-            try std.json.innerParseFromValue(McpServerTypes, allocator, type_val, options)
+            try std.json.innerParseFromValue(McpServerType, allocator, type_val, options)
         else
-            McpServerTypes.stdio;
-        var stdio_options = options;
-        stdio_options.ignore_unknown_fields = true;
+            McpServerType.stdio;
         return switch (server_type) {
             .http => .{ .http = {} },
             .sse => .{ .sse = {} },
             .acp => .{ .acp = {} },
-            .stdio => .{ .stdio = try std.json.innerParseFromValue(McpServerStdio, allocator, source, stdio_options) },
+            .stdio => .{ .stdio = try std.json.innerParseFromValue(McpServerStdio, allocator, source, options) },
         };
     }
 };
@@ -222,6 +224,31 @@ pub const EnvVariable = struct {
     name: []const u8,
     /// The value of the environment variable.
     value: []const u8,
+};
+
+/// Request parameters for sending a user prompt to the agent.
+///
+/// Contains the user's message and any additional context.
+///
+/// See protocol docs: [User Message](https://agentclientprotocol.com/protocol/prompt-turn#1-user-message)
+pub const PromptRequest = struct {
+    /// The ID of the session to send this user message to
+    sessionId: shared_api.SessionId,
+
+    /// The blocks of content that compose the user's message.
+    ///
+    /// As a baseline, the Agent MUST support [`ContentBlock::Text`] and [`ContentBlock::ResourceLink`],
+    /// while other variants are optionally enabled via [`PromptCapabilities`].
+    ///
+    /// The Client MUST adapt its interface according to [`PromptCapabilities`].
+    ///
+    /// The client MAY include referenced pieces of context as either
+    /// [`ContentBlock::Resource`] or [`ContentBlock::ResourceLink`].
+    ///
+    /// When available, [`ContentBlock::Resource`] is preferred
+    /// as it avoids extra round-trips and allows the message to include
+    /// pieces of context from sources the agent may not have access to.
+    prompt: []shared_api.ContentBlock,
 };
 
 test "json parse initialize ClientRequest" {
@@ -287,6 +314,12 @@ test "json parse RequestMethod mapping" {
     }
 
     {
+        const parsed = try std.json.parseFromSlice(RequestMethod, allocator, "\"session/prompt\"", .{});
+        defer parsed.deinit();
+        try std.testing.expectEqual(RequestMethod.session_prompt, parsed.value);
+    }
+
+    {
         const parsed = try std.json.parseFromSlice(RequestMethod, allocator, "\"some/unknown/method\"", .{});
         defer parsed.deinit();
         try std.testing.expectEqual(RequestMethod.unknown, parsed.value);
@@ -308,7 +341,7 @@ test "json parse McpServer stdio" {
     defer parsed.deinit();
 
     const server = parsed.value;
-    try std.testing.expectEqual(McpServerTypes.stdio, @as(McpServerTypes, server));
+    try std.testing.expectEqual(McpServerType.stdio, @as(McpServerType, server));
     try std.testing.expectEqualStrings("filesystem", server.stdio.name);
     try std.testing.expectEqualStrings("/path/to/mcp-server", server.stdio.command);
     try std.testing.expectEqual(1, server.stdio.args.len);
@@ -328,7 +361,7 @@ test "json parse McpServer http" {
     defer parsed.deinit();
 
     const server = parsed.value;
-    try std.testing.expectEqual(McpServerTypes.http, @as(McpServerTypes, server));
+    try std.testing.expectEqual(McpServerType.http, @as(McpServerType, server));
 }
 
 test "json parse session/new ClientRequest with McpServer" {
@@ -365,10 +398,44 @@ test "json parse session/new ClientRequest with McpServer" {
     try std.testing.expectEqual(1, session_params.mcpServers.len);
 
     const mcp_server = session_params.mcpServers[0];
-    try std.testing.expectEqual(McpServerTypes.stdio, @as(McpServerTypes, mcp_server));
+    try std.testing.expectEqual(McpServerType.stdio, @as(McpServerType, mcp_server));
     try std.testing.expectEqualStrings("filesystem", mcp_server.stdio.name);
     try std.testing.expectEqualStrings("/path/to/mcp-server", mcp_server.stdio.command);
     try std.testing.expectEqual(1, mcp_server.stdio.args.len);
     try std.testing.expectEqualStrings("--stdio", mcp_server.stdio.args[0]);
     try std.testing.expectEqual(0, mcp_server.stdio.env.len);
+}
+
+test "json parse session/prompt ClientRequest with PromptRequest" {
+    const allocator = std.testing.allocator;
+    const json_str =
+        \\{
+        \\  "jsonrpc": "2.0",
+        \\  "id": 3,
+        \\  "method": "session/prompt",
+        \\  "params": {
+        \\    "sessionId": "session-123",
+        \\    "prompt": [
+        \\      {
+        \\        "type": "text",
+        \\        "text": "Hello ACP agent!"
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const parsed = try std.json.parseFromSlice(ClientRequest, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    const request = parsed.value;
+    try std.testing.expectEqualStrings("2.0", request.jsonrpc);
+    try std.testing.expectEqual(RequestMethod.session_prompt, request.method);
+    try std.testing.expectEqual(shared_api.RequestId{ .integer = 3 }, request.id);
+
+    const prompt_params = request.params.session_prompt;
+    try std.testing.expectEqualStrings("session-123", prompt_params.sessionId);
+    try std.testing.expectEqual(1, prompt_params.prompt.len);
+    try std.testing.expectEqual(shared_api.ContentType.text, @as(shared_api.ContentType, prompt_params.prompt[0]));
+    try std.testing.expectEqualStrings("Hello ACP agent!", prompt_params.prompt[0].text);
 }

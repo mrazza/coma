@@ -36,14 +36,17 @@ pub const SessionInitArgs = std.meta.ArgsTuple(@TypeOf(agent.Session.init));
 pub fn createSession(self: *SessionStorage, args: SessionInitArgs) !*SessionState {
     const session_id = try std.fmt.allocPrint(self.allocator, "session_{}", .{self.session_counter});
     errdefer self.allocator.free(session_id);
-    self.session_counter += 1;
+
     const session_state = try self.allocator.create(SessionState);
-    session_state.* = .{ .id = session_id, .session = try @call(.auto, agent.Session.init, args) };
-    self.sessions.put(session_id, session_state) catch |err| {
-        session_state.session.deinit();
-        self.allocator.destroy(session_state);
-        return err;
-    };
+    errdefer self.allocator.destroy(session_state);
+
+    var session = try @call(.auto, agent.Session.init, args);
+    errdefer session.deinit();
+    session_state.* = .{ .id = session_id, .session = session };
+
+    try self.sessions.put(session_id, session_state);
+
+    self.session_counter += 1;
     return session_state;
 }
 
