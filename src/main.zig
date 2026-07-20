@@ -1,10 +1,10 @@
 const std = @import("std");
 const provider = @import("provider");
 const llm = @import("llm");
-const agent_pkg = @import("agent");
-const Agent = agent_pkg.Agent;
-const Tool = agent_pkg.Tool;
-const types = agent_pkg.types;
+const agent = @import("agent");
+const Session = agent.Session;
+const Tool = agent.Tool;
+const types = agent.types;
 const acp_pkg = @import("acp");
 
 const coma = @import("coma");
@@ -119,7 +119,7 @@ fn printMarkdown(stream_ctx: *StreamContext, text: []const u8) void {
     }
 }
 
-fn streamCallback(ctx: ?*anyopaque, agent_chunk: agent_pkg.types.StreamingChunk) void {
+fn streamCallback(ctx: ?*anyopaque, agent_chunk: types.StreamingChunk) void {
     const stream_ctx: *StreamContext = @ptrCast(@alignCast(ctx));
     switch (agent_chunk) {
         .model_chunk => |chunk| {
@@ -346,13 +346,13 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    const agent_config: types.AgentConfig = .{
+    const session_config: types.SessionConfig = .{
         .model = selected_model.?,
         .tools = tools,
     };
 
-    var agent: Agent = try .init(allocator, io, client, agent_config);
-    defer agent.deinit();
+    var session: Session = try .init(allocator, io, client, session_config);
+    defer session.deinit();
 
     std.debug.print(
         \\{s}============================================================================
@@ -375,7 +375,7 @@ pub fn main(init: std.process.Init) !void {
 
         const turn = types.Turn{ .prompt = user_input };
         var stream_ctx = StreamContext{ .allocator = allocator };
-        var result = agent.executeTurnStreaming(turn, streamCallback, &stream_ctx) catch |err| {
+        var result = session.executeTurnStreaming(turn, streamCallback, &stream_ctx) catch |err| {
             std.debug.print("Error during execution: {}\n", .{err});
             continue;
         };

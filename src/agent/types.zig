@@ -4,21 +4,21 @@ const Tool = @import("Tool.zig");
 
 const Allocator = std.mem.Allocator;
 
-/// Configuration for initializing an Agent.
-pub const AgentConfig = struct {
-    /// The LLM model to be used by the Agent.
+/// Configuration for initializing a Session.
+pub const SessionConfig = struct {
+    /// The LLM model to be used by the Session.
     model: llm.types.Model,
-    /// A list of executable tools available for the Agent to use.
+    /// A list of executable tools available for the Session to use.
     tools: []const Tool = &.{},
 };
 
-/// Represents the input to start a single execution turn for the Agent.
+/// Represents the input to start a single execution turn in a Session.
 pub const Turn = struct {
     /// The input text prompt or message for this turn.
     prompt: []const u8,
 };
 
-/// The result of an intermediate step executed during an agent turn.
+/// The result of an intermediate step executed during a turn.
 ///
 /// An intermediate step is either a response from the model that required further
 /// processing (e.g. a tool call) or the result of executing a tool call requested by
@@ -39,7 +39,7 @@ pub const IntermediateStepResult = union(enum) {
     }
 };
 
-/// The final result of an agent turn, including all intermediate steps taken and the final LLM step result.
+/// The final result of a turn, including all intermediate steps taken and the final LLM step result.
 /// Memory must be freed using the `deinit` method.
 pub const TurnResult = struct {
     /// The allocator used to allocate resources in this TurnResult.
