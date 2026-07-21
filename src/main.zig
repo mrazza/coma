@@ -253,14 +253,19 @@ fn executeTypescript(allocator: std.mem.Allocator, io: std.Io, code: []const u8)
     return result.stdout;
 }
 
-fn getWeather(allocator: std.mem.Allocator, zip_code: i64) ![]const u8 {
+fn getWeather(allocator: std.mem.Allocator, zip_code: i64, ctx: ?*anyopaque) ![]const u8 {
+    const str: *WeatherToolCtx = @ptrCast(@alignCast(ctx));
     const result_str = if (zip_code == 7302)
-        try allocator.dupe(u8, "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph")
+        try allocator.dupe(u8, str.weather_str)
     else
         try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip_code});
 
     return result_str;
 }
+
+const WeatherToolCtx = struct {
+    weather_str: []const u8,
+};
 
 /// The main entry point of the application.
 /// Currently used for testing.
@@ -294,6 +299,8 @@ pub fn main(init: std.process.Init) !void {
         }
     } else unreachable;
 
+    var weather_ctx: WeatherToolCtx = .{ .weather_str = "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph" };
+
     const tools = &[_]Tool{
         Tool.init(.{
             .name = "execute_typescript",
@@ -307,7 +314,7 @@ pub fn main(init: std.process.Init) !void {
                 },
             },
         }, executeTypescript),
-        Tool.init(.{
+        Tool.initWithContext(.{
             .name = "get_weather",
             .description = "Get the current weather for a given zip code.",
             .parameters = &.{
@@ -318,7 +325,7 @@ pub fn main(init: std.process.Init) !void {
                     .description = "The 5-digit zip code to get the weather for.",
                 },
             },
-        }, getWeather),
+        }, getWeather, @ptrCast(&weather_ctx)),
     };
 
     const session_config: types.SessionConfig = .{
@@ -347,11 +354,11 @@ pub fn main(init: std.process.Init) !void {
             .provider = gemini_client.provider(),
             .default_session_config = session_config,
         };
-        var server = acp_pkg.Server.init(allocator, io, &stdin_reader.interface, &stdout_writer.interface, acp_config);
+        var server = acp_pkg.Server.init(allocator, io, &stdin_reader.interface, &stdout_writer.interface);
         defer server.deinit();
 
         std.debug.print("ACP Server: starting standard input/output loop...\n", .{});
-        try server.run();
+        try server.run(acp_config);
         return;
     }
 
