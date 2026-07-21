@@ -1,7 +1,9 @@
 const std = @import("std");
 const agent = @import("agent");
+const llm = @import("llm");
 const agent_api = @import("agent_api.zig");
 const client_api = @import("client_api.zig");
+const converter = @import("converter.zig");
 const JsonRpcReader = @import("json_rpc/JsonRpcReader.zig");
 const JsonRpcWriter = @import("json_rpc/JsonRpcWriter.zig");
 const SessionStorage = @import("SessionStorage.zig");
@@ -47,65 +49,8 @@ pub fn deinit(self: *Server) void {
 
 fn handleTurnUpdate(ctx: ?*anyopaque, chunk: agent.types.StreamingChunk) void {
     const stream_ctx: *ServerSessionContext = @ptrCast(@alignCast(ctx));
-    const session_state = stream_ctx.session_state;
-    const json_rpc_writer = stream_ctx.json_rpc_writer;
-
-    switch (chunk) {
-        .model_chunk => |model_chunk| {
-            switch (model_chunk.event) {
-                .step_event => |step| {
-                    switch (step.event) {
-                        .delta => |delta| {
-                            switch (delta) {
-                                .model_output => |mo| {
-                                    const output_reply: agent_api.AgentNotification = .{
-                                        .method = .session_update,
-                                        .params = .{
-                                            .session_update = .{
-                                                .sessionId = session_state.id,
-                                                .update = .{
-                                                    .agent_message_chunk = .{
-                                                        .content = .{
-                                                            .text = mo.text,
-                                                        },
-                                                    },
-                                                },
-                                            },
-                                        },
-                                    };
-
-                                    json_rpc_writer.writeJsonObject(output_reply, .{ .use_headers = false }) catch {};
-                                },
-                                .thought => |thought| {
-                                    const thinking_reply: agent_api.AgentNotification = .{
-                                        .method = .session_update,
-                                        .params = .{
-                                            .session_update = .{
-                                                .sessionId = session_state.id,
-                                                .update = .{
-                                                    .agent_thought_chunk = .{
-                                                        .content = .{
-                                                            .text = thought.text,
-                                                        },
-                                                    },
-                                                },
-                                            },
-                                        },
-                                    };
-
-                                    json_rpc_writer.writeJsonObject(thinking_reply, .{ .use_headers = false }) catch {};
-                                },
-                                else => {},
-                            }
-                        },
-                        else => {},
-                    }
-                },
-                else => {},
-            }
-        },
-        else => {},
-    }
+    const notification = converter.streamingChunkToNotification(stream_ctx.session_state.id, chunk) orelse return;
+    stream_ctx.json_rpc_writer.writeJsonObject(notification, .{ .use_headers = false }) catch {};
 }
 
 pub fn run(self: *Server) !void {
