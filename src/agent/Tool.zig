@@ -20,10 +20,11 @@ pub const CallError = error{
 } || std.mem.Allocator.Error;
 
 const Tool = @This();
-const ToolExecuteFn = *const fn (allocator: Allocator, io: Io, args: []const Argument) CallError![]const u8;
+const ToolExecuteFn = *const fn (allocator: Allocator, io: Io, ctx: ?*anyopaque, args: []const Argument) CallError![]const u8;
 
 descriptor: llm.types.Tool,
 execute_fn: ToolExecuteFn,
+ctx: ?*anyopaque,
 
 /// Executes the tool with the given arguments.
 ///
@@ -36,7 +37,7 @@ execute_fn: ToolExecuteFn,
 /// Returns a `ToolResult` containing the result of the tool call. The caller is responsible
 /// for freeing the `ToolResult` by calling `deinit()`.
 pub fn execute(self: *const Tool, allocator: Allocator, io: Io, id: []const u8, args: []const Argument) CallError!ToolResult {
-    const result = try self.execute_fn(allocator, io, args);
+    const result = try self.execute_fn(allocator, io, self.ctx, args);
     errdefer allocator.free(result);
     return ToolResult.initTakingResultOwnership(allocator, self.descriptor.name, id, result);
 }
@@ -59,7 +60,39 @@ pub fn execute(self: *const Tool, allocator: Allocator, io: Io, id: []const u8, 
 /// ownership of the memory to the caller. The result will be passed to the LLM as the
 /// result of the tool call.
 pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
-    return comptime blk: {
+    if (comptime expectsContext(execute_fn)) {
+        @compileError("Tool function '" ++ descriptor.name ++ "' expects a context parameter (?*anyopaque). Use Tool.initWithContext instead.");
+    }
+    return initInternal(descriptor, execute_fn, null);
+}
+
+/// Creates a Tool from a descriptor, a function, and a provided context object.
+/// Tool calls will delegate to the provided function when called.
+///
+/// `descriptor` is the tool's descriptor defining the structure of the tool for the LLM.
+/// `execute_fn` is the function to be called when the tool is executed.
+/// `ctx` is an opaque pointer that will be passed to the `execute_fn`.
+///
+/// The function arguments must match the descriptor parameters and be in the same order.
+/// The function should also take an allocator as an argument which will be used, at least,
+/// to allocate its result. The allocator can be in any position provided the other arguments
+/// are still in the same order as the parameters in the descriptor.
+///
+/// Additionally, the function can optionally accept an Io struct which represents the IO to use
+/// during the tool call.
+///
+/// The `execute_fn` should return the result of the tool call as a string and transfer
+/// ownership of the memory to the caller. The result will be passed to the LLM as the
+/// result of the tool call.
+pub fn initWithContext(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype, ctx: *anyopaque) Tool {
+    if (comptime !expectsContext(execute_fn)) {
+        @compileError("Tool function '" ++ descriptor.name ++ "' does not take a context parameter (?*anyopaque). Use Tool.init instead.");
+    }
+    return initInternal(descriptor, execute_fn, ctx);
+}
+
+fn initInternal(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype, ctx: ?*anyopaque) Tool {
+    var value = comptime blk: {
         for (descriptor.parameters, 0..) |p1, i| {
             for (descriptor.parameters, 0..) |p2, j| {
                 if (i != j and std.mem.eql(u8, p1.name, p2.name)) {
@@ -75,8 +108,11 @@ pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) T
                 .ok => |f| f,
                 .err => |e| @compileError(e.msg),
             },
+            .ctx = null,
         };
     };
+    value.ctx = ctx;
+    return value;
 }
 
 const ValidationError = error{
@@ -151,6 +187,25 @@ inline fn findArgument(args: []const Argument, name: []const u8) ?*const Argumen
     return null;
 }
 
+fn expectsContext(comptime execute_fn: anytype) bool {
+    const FnType = @TypeOf(execute_fn);
+    const fn_info = switch (@typeInfo(FnType)) {
+        .@"fn" => |info| info,
+        .pointer => |ptr_info| switch (@typeInfo(ptr_info.child)) {
+            .@"fn" => |info| info,
+            else => return false,
+        },
+        else => return false,
+    };
+
+    inline for (fn_info.params) |param| {
+        if (param.type) |T| {
+            if (T == ?*anyopaque) return true;
+        }
+    }
+    return false;
+}
+
 fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) ValidationResult {
     const FnType = @TypeOf(execute_fn);
     const fn_info = switch (@typeInfo(FnType)) {
@@ -176,7 +231,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         for (fn_info.params, 0..) |fn_param, i| {
             result_types[i] = fn_param.type.?;
 
-            if (fn_param.type.? != Allocator and fn_param.type.? != Io) {
+            if (fn_param.type.? != Allocator and fn_param.type.? != Io and fn_param.type.? != ?*anyopaque) {
                 if (param_idx >= descriptor_params.len) {
                     return .{ .err = .{ .code = ValidationError.ArgumentCountMismatch, .msg = "More arguments in function than descriptor." } };
                 }
@@ -203,7 +258,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
     const TupleType = @Tuple(&types);
     return .{
         .ok = struct {
-            pub fn call(allocator: Allocator, io: Io, input_args: []const Argument) CallError![]const u8 {
+            pub fn call(allocator: Allocator, io: Io, ctx: ?*anyopaque, input_args: []const Argument) CallError![]const u8 {
                 var args: TupleType = undefined;
                 var descriptor_idx: usize = 0;
                 inline for (0..fn_info.params.len) |func_idx| {
@@ -212,6 +267,8 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                         args[func_idx] = allocator;
                     } else if (T == Io) {
                         args[func_idx] = io;
+                    } else if (T == ?*anyopaque) {
+                        args[func_idx] = ctx.?;
                     } else {
                         const curr_descriptor = descriptor.parameters[descriptor_idx];
                         descriptor_idx += 1;
@@ -280,6 +337,52 @@ test init {
     try std.testing.expectEqualStrings("example_function", result.tool_name);
     try std.testing.expectEqualStrings("123", result.id);
     try std.testing.expectEqualStrings("12hello", result.result);
+}
+
+test initWithContext {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tool_descriptor: llm.types.Tool = .{
+        .name = "example_context_function",
+        .description = "An example function that takes context and two arguments",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "The first argument to the function",
+                .type = .integer,
+                .required = true,
+            },
+            .{
+                .name = "arg2",
+                .description = "The second argument to the function",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const CtxStruct = struct { prefix: []const u8 };
+    var ctx_obj: CtxStruct = .{ .prefix = "ctx-" };
+
+    const tool_impl = struct {
+        pub fn example_context_function(_: Allocator, arg1: i64, arg2: []const u8, ctx: ?*anyopaque) ![]const u8 {
+            const ctx_ptr: *CtxStruct = @ptrCast(@alignCast(ctx.?));
+            return try std.fmt.allocPrint(allocator, "{s}{d}{s}", .{ ctx_ptr.prefix, arg1, arg2 });
+        }
+    };
+    const tool = initWithContext(tool_descriptor, tool_impl.example_context_function, @ptrCast(&ctx_obj));
+
+    const args = [_]Argument{
+        .{ .name = "arg1", .value = .{ .integer = 12 } },
+        .{ .name = "arg2", .value = .{ .string = "hello" } },
+    };
+
+    var result = try tool.execute(allocator, io, "123", &args);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("example_context_function", result.tool_name);
+    try std.testing.expectEqualStrings("123", result.id);
+    try std.testing.expectEqualStrings("ctx-12hello", result.result);
 }
 
 test "makeExecuteFn - ExpectedFunctionOrPointer" {
@@ -877,4 +980,59 @@ test "execute - multiple Io parameters" {
     try std.testing.expectEqualStrings("multi_io_func", result.tool_name);
     try std.testing.expectEqualStrings("multi-io", result.id);
     try std.testing.expectEqualStrings("multi-io-77", result.result);
+}
+
+test expectsContext {
+    const ImplNoCtx = struct {
+        pub fn run(_: Allocator, _: i64) ![]const u8 {
+            return "";
+        }
+    };
+    const ImplWithCtx = struct {
+        pub fn run(_: Allocator, _: i64, _: ?*anyopaque) ![]const u8 {
+            return "";
+        }
+    };
+    try std.testing.expect(!expectsContext(ImplNoCtx.run));
+    try std.testing.expect(expectsContext(ImplWithCtx.run));
+}
+
+test "execute - has context" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tool_descriptor: llm.types.Tool = .{
+        .name = "ctx_func",
+        .description = "Takes context and arguments",
+        .parameters = &.{
+            .{
+                .name = "arg1",
+                .description = "The first argument",
+                .type = .string,
+                .required = true,
+            },
+        },
+    };
+    const CtxStruct = struct { prefix: []const u8 };
+    var ctx_obj: CtxStruct = .{ .prefix = "ctx-hello-" };
+
+    const tool_impl = struct {
+        pub fn ctx_func(tool_allocator: Allocator, arg1: []const u8, ctx: ?*anyopaque) ![]const u8 {
+            const ctx_ptr: *CtxStruct = @ptrCast(@alignCast(ctx.?));
+            return try std.fmt.allocPrint(tool_allocator, "{s}{s}", .{ ctx_ptr.prefix, arg1 });
+        }
+    };
+
+    const tool = initWithContext(tool_descriptor, tool_impl.ctx_func, @ptrCast(&ctx_obj));
+
+    const args = [_]Argument{
+        .{ .name = "arg1", .value = .{ .string = "world" } },
+    };
+
+    var result = try tool.execute(allocator, io, "ctx-id", &args);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("ctx_func", result.tool_name);
+    try std.testing.expectEqualStrings("ctx-id", result.id);
+    try std.testing.expectEqualStrings("ctx-hello-world", result.result);
 }

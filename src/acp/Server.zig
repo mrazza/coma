@@ -30,16 +30,14 @@ io: Io,
 input_reader: *Io.Reader,
 output_writer: *Io.Writer,
 sessions: SessionStorage,
-acp_config: Config,
 
-pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_writer: *Io.Writer, acp_config: Config) Server {
+pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_writer: *Io.Writer) Server {
     return .{
         .allocator = allocator,
         .io = io,
         .input_reader = input_reader,
         .output_writer = output_writer,
         .sessions = .init(allocator),
-        .acp_config = acp_config,
     };
 }
 
@@ -53,7 +51,7 @@ fn handleTurnUpdate(ctx: ?*anyopaque, chunk: agent.types.StreamingChunk) void {
     stream_ctx.json_rpc_writer.writeJsonObject(notification, .{ .use_headers = false }) catch {};
 }
 
-pub fn run(self: *Server) !void {
+pub fn run(self: *Server, acp_config: Config) !void {
     var arena = std.heap.ArenaAllocator.init(self.allocator);
     defer arena.deinit();
     const arena_allocator = arena.allocator();
@@ -70,8 +68,6 @@ pub fn run(self: *Server) !void {
 
         switch (client_request.method) {
             .initialize => {
-                std.debug.print("Got init: {any}", .{client_request});
-
                 const reply: agent_api.AgentResponse = .{
                     .id = client_request.id,
                     .result = .{
@@ -86,16 +82,14 @@ pub fn run(self: *Server) !void {
                 var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
                 defer json_rpc_writer.deinit();
 
-                try json_rpc_writer.writeJsonObject(reply, .{ .use_headers = false });
+                try json_rpc_writer.writeJsonObject(reply, .{});
             },
             .session_new => {
-                std.debug.print("Got session_new request: {any}\n", .{client_request});
-
                 const session_state = try self.sessions.createSession(.{
                     self.allocator,
                     self.io,
-                    self.acp_config.provider,
-                    self.acp_config.default_session_config,
+                    acp_config.provider,
+                    acp_config.default_session_config,
                 });
 
                 const reply: agent_api.AgentResponse = .{
@@ -109,11 +103,9 @@ pub fn run(self: *Server) !void {
                 var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
                 defer json_rpc_writer.deinit();
 
-                try json_rpc_writer.writeJsonObject(reply, .{ .use_headers = false });
+                try json_rpc_writer.writeJsonObject(reply, .{});
             },
             .session_prompt => {
-                std.debug.print("Got session_prompt request: {any}\n", .{client_request.params.session_prompt.prompt});
-
                 const session = try self.sessions.getSession(client_request.params.session_prompt.sessionId);
                 var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
                 defer json_rpc_writer.deinit();
@@ -135,7 +127,7 @@ pub fn run(self: *Server) !void {
                     },
                 };
 
-                try json_rpc_writer.writeJsonObject(reply, .{ .use_headers = false });
+                try json_rpc_writer.writeJsonObject(reply, .{});
             },
             .unknown => {
                 std.debug.print("Unknown message: {any}\n", .{client_request});
