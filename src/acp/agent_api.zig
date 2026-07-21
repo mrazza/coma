@@ -493,4 +493,3 @@ test "json stringify AgentNotification session_update thought chunk" {
     const content = update.get("content").?.object;
     try std.testing.expectEqualStrings("Thinking...", content.get("text").?.string);
 }
-
