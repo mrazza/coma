@@ -253,7 +253,7 @@ fn executeTypescript(allocator: std.mem.Allocator, io: std.Io, code: []const u8)
     return result.stdout;
 }
 
-fn getWeather(allocator: std.mem.Allocator, zip_code: i64, ctx: ?*anyopaque) ![]const u8 {
+fn getWeather(allocator: std.mem.Allocator, zip_code: i64, ctx: *anyopaque) ![]const u8 {
     const str: *WeatherToolCtx = @ptrCast(@alignCast(ctx));
     const result_str = if (zip_code == 7302)
         try allocator.dupe(u8, str.weather_str)
