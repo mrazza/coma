@@ -9,6 +9,50 @@ pub const AgentResponse = struct {
     result: AgentResponseResult,
 };
 
+/// JSON-RPC 2.0 error codes used in agent error responses.
+///
+/// See https://www.jsonrpc.org/specification#error_object
+pub const JsonRpcErrorCode = enum(i32) {
+    /// Invalid JSON was received by the server. An error occurred on the server while parsing the JSON text.
+    parse_error = -32700,
+    /// The JSON sent is not a valid Request object.
+    invalid_request = -32600,
+    /// The method does not exist / is not available.
+    method_not_found = -32601,
+    /// Invalid method parameter(s).
+    invalid_params = -32602,
+    /// Internal JSON-RPC error.
+    internal_error = -32603,
+    /// The requested session ID was not found.
+    session_not_found = -32001,
+
+    pub fn jsonStringify(self: JsonRpcErrorCode, jw: anytype) !void {
+        try jw.write(@intFromEnum(self));
+    }
+};
+
+/// Represents a JSON-RPC 2.0 error payload.
+///
+/// See https://www.jsonrpc.org/specification#error_object
+pub const JsonRpcError = struct {
+    /// Error code indicating the error type that occurred.
+    code: JsonRpcErrorCode,
+    /// A short description of the error.
+    message: []const u8,
+};
+
+/// A JSON-RPC error response sent by the agent to the client.
+///
+/// See https://www.jsonrpc.org/specification#error_object
+pub const AgentErrorResponse = struct {
+    /// JSON-RPC protocol version string (always "2.0").
+    jsonrpc: []const u8 = "2.0",
+    /// The ID of the request this error response answers (or null if parsing failed).
+    id: shared_api.RequestId,
+    /// Error payload describing the failure.
+    @"error": JsonRpcError,
+};
+
 /// Union of all possible response data types.
 ///
 /// The filled member is dependent on the method type the agent is responding to.
