@@ -8,6 +8,10 @@ pub const JsonHttpClient = MakeJsonClient(*std.http.Client);
 pub const MockJsonClient = MakeJsonClient(testing.MockHttpClient);
 
 /// Generates a JSON HTTP client wrapper parameterized by the underlying HTTP client type.
+///
+/// The resulting type is as thread-safe as the underlying client type. Therefore, for JsonClients
+/// created against `std.http.Client` individual connects and requests are created in a thread-safe
+/// manner but each request, itself, is not thread-safe.
 pub fn MakeJsonClient(comptime ClientType: type) type {
     return struct {
         http_client: ClientType,

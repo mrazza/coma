@@ -1,10 +1,11 @@
 const std = @import("std");
 const provider = @import("provider");
 const llm = @import("llm");
-const agent_pkg = @import("agent");
-const Agent = agent_pkg.Agent;
-const Tool = agent_pkg.Tool;
-const types = agent_pkg.types;
+const agent = @import("agent");
+const Session = agent.Session;
+const Tool = agent.Tool;
+const types = agent.types;
+const acp_pkg = @import("acp");
 
 const coma = @import("coma");
 
@@ -118,7 +119,7 @@ fn printMarkdown(stream_ctx: *StreamContext, text: []const u8) void {
     }
 }
 
-fn streamCallback(ctx: ?*anyopaque, agent_chunk: agent_pkg.types.StreamingChunk) void {
+fn streamCallback(ctx: ?*anyopaque, agent_chunk: types.StreamingChunk) void {
     const stream_ctx: *StreamContext = @ptrCast(@alignCast(ctx));
     switch (agent_chunk) {
         .model_chunk => |chunk| {
@@ -252,14 +253,19 @@ fn executeTypescript(allocator: std.mem.Allocator, io: std.Io, code: []const u8)
     return result.stdout;
 }
 
-fn getWeather(allocator: std.mem.Allocator, zip_code: i64) ![]const u8 {
+fn getWeather(allocator: std.mem.Allocator, zip_code: i64, ctx: *anyopaque) ![]const u8 {
+    const str: *WeatherToolCtx = @ptrCast(@alignCast(ctx));
     const result_str = if (zip_code == 7302)
-        try allocator.dupe(u8, "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph")
+        try allocator.dupe(u8, str.weather_str)
     else
         try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip_code});
 
     return result_str;
 }
+
+const WeatherToolCtx = struct {
+    weather_str: []const u8,
+};
 
 /// The main entry point of the application.
 /// Currently used for testing.
@@ -293,6 +299,8 @@ pub fn main(init: std.process.Init) !void {
         }
     } else unreachable;
 
+    var weather_ctx: WeatherToolCtx = .{ .weather_str = "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph" };
+
     const tools = &[_]Tool{
         Tool.init(.{
             .name = "execute_typescript",
@@ -306,7 +314,7 @@ pub fn main(init: std.process.Init) !void {
                 },
             },
         }, executeTypescript),
-        Tool.init(.{
+        Tool.initWithContext(.{
             .name = "get_weather",
             .description = "Get the current weather for a given zip code.",
             .parameters = &.{
@@ -317,16 +325,45 @@ pub fn main(init: std.process.Init) !void {
                     .description = "The 5-digit zip code to get the weather for.",
                 },
             },
-        }, getWeather),
+        }, getWeather, @ptrCast(&weather_ctx)),
     };
 
-    const agent_config: types.AgentConfig = .{
+    const session_config: types.SessionConfig = .{
         .model = selected_model.?,
         .tools = tools,
     };
 
-    var agent: Agent = try .init(allocator, io, client, agent_config);
-    defer agent.deinit();
+    const args = try init.minimal.args.toSlice(allocator);
+    defer allocator.free(args);
+
+    var run_acp = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--acp") or std.mem.eql(u8, arg, "acp")) {
+            run_acp = true;
+            break;
+        }
+    }
+
+    if (run_acp) {
+        var stdin_buffer: [1024]u8 = undefined;
+        var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
+        var stdout_buffer: [1024]u8 = undefined;
+        var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+
+        const acp_config = acp_pkg.Server.Config{
+            .provider = gemini_client.provider(),
+            .default_session_config = session_config,
+        };
+        var server = acp_pkg.Server.init(allocator, io, &stdin_reader.interface, &stdout_writer.interface);
+        defer server.deinit();
+
+        std.debug.print("ACP Server: starting standard input/output loop...\n", .{});
+        try server.run(acp_config);
+        return;
+    }
+
+    var session: Session = try .init(allocator, io, client, session_config);
+    defer session.deinit();
 
     std.debug.print(
         \\{s}============================================================================
@@ -349,7 +386,7 @@ pub fn main(init: std.process.Init) !void {
 
         const turn = types.Turn{ .prompt = user_input };
         var stream_ctx = StreamContext{ .allocator = allocator };
-        var result = agent.executeTurnStreaming(turn, streamCallback, &stream_ctx) catch |err| {
+        var result = session.executeTurnStreaming(turn, streamCallback, &stream_ctx) catch |err| {
             std.debug.print("Error during execution: {}\n", .{err});
             continue;
         };

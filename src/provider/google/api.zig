@@ -6,7 +6,13 @@ const llm = @import("llm");
 ///
 /// Useful when implementing a custom json stringifier that writes additional fields before the object fields.
 /// But still needs the object fields.
+/// TODO(razza): Move to a general location? This is reused in acp/shared_api
 fn jsonStringifyFields(object: anytype, jw: anytype) !void {
+    const info = @typeInfo(@TypeOf(object));
+    if (info != .@"struct") {
+        @compileError("jsonStringifyFields only supports struct types");
+    }
+
     inline for (std.meta.fields(@TypeOf(object))) |field| {
         const value = @field(object, field.name);
         if (@typeInfo(field.type) == .optional and value == null) {

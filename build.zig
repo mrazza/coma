@@ -56,6 +56,17 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const acp = b.addModule("acp", .{
+        .root_source_file = b.path("src/acp/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "agent", .module = agent },
+            .{ .name = "llm", .module = llm },
+            .{ .name = "testing", .module = testing },
+        },
+    });
+
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Zig modules are the preferred way of making Zig code available to consumers.
@@ -78,6 +89,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "llm", .module = llm },
             .{ .name = "provider", .module = provider },
             .{ .name = "agent", .module = agent },
+            .{ .name = "acp", .module = acp },
         },
     });
 
@@ -122,6 +134,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "llm", .module = llm },
                 .{ .name = "provider", .module = provider },
                 .{ .name = "agent", .module = agent },
+                .{ .name = "acp", .module = acp },
             },
         }),
     });
@@ -180,6 +193,7 @@ pub fn build(b: *std.Build) void {
         "kcov-out/suite_3",
         "kcov-out/suite_4",
         "kcov-out/suite_5",
+        "kcov-out/suite_6",
     });
 
     for (coverage_test_suites, 0..) |suite, i| {
@@ -222,7 +236,7 @@ fn createTestSuites(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-) [6]*std.Build.Step.Compile {
+) [7]*std.Build.Step.Compile {
     const llm = b.createModule(.{
         .root_source_file = b.path("src/llm/root.zig"),
         .target = target,
@@ -259,6 +273,17 @@ fn createTestSuites(
         },
     });
 
+    const acp = b.createModule(.{
+        .root_source_file = b.path("src/acp/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "agent", .module = agent },
+            .{ .name = "llm", .module = llm },
+            .{ .name = "testing", .module = testing },
+        },
+    });
+
     const coma = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -267,6 +292,7 @@ fn createTestSuites(
             .{ .name = "llm", .module = llm },
             .{ .name = "provider", .module = provider },
             .{ .name = "agent", .module = agent },
+            .{ .name = "acp", .module = acp },
         },
     });
 
@@ -279,6 +305,7 @@ fn createTestSuites(
             .{ .name = "llm", .module = llm },
             .{ .name = "provider", .module = provider },
             .{ .name = "agent", .module = agent },
+            .{ .name = "acp", .module = acp },
         },
     });
 
@@ -299,5 +326,6 @@ fn createTestSuites(
         b.addTest(.{ .root_module = agent }),
         b.addTest(.{ .root_module = llm_test_module }),
         b.addTest(.{ .root_module = testing }),
+        b.addTest(.{ .root_module = acp }),
     };
 }
