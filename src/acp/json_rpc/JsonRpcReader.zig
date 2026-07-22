@@ -70,8 +70,8 @@ fn readRawMessageInternal(self: *JsonRpcReader) ![]const u8 {
 
     // TODO: We assume that the first header (in LSP-style JSON-RPC) is "Content-Length".
     // This may not always be true. "Content-Type" is another common header and the
-    // spec does not specify ordering. Additionally, the headers are not case-sensitive.
-    if (std.mem.startsWith(u8, line, "Content-Length:")) {
+    // spec does not specify ordering.
+    if (std.ascii.startsWithIgnoreCase(line, "Content-Length:")) {
         const parts = std.mem.trim(u8, line["Content-Length:".len..], " ");
         const content_length = try std.fmt.parseInt(usize, parts, 10);
 
@@ -217,6 +217,24 @@ test readRawMessage {
 
         try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}", msg1);
         try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\"}", msg2);
+        try std.testing.expectError(error.EndOfStream, reader.readRawMessage());
+    }
+
+    // test reading messages with lower-case header
+    {
+        const input =
+            \\content-length: 46
+            \\
+            \\{"jsonrpc":"2.0","id":1,"method":"initialize"}
+        ;
+        var r = std.Io.Reader.fixed(input);
+        var reader: JsonRpcReader = .init(allocator, &r);
+        defer reader.deinit();
+
+        const msg1 = try reader.readRawMessage();
+        defer allocator.free(msg1);
+
+        try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}", msg1);
         try std.testing.expectError(error.EndOfStream, reader.readRawMessage());
     }
 }

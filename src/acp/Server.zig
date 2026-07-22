@@ -18,7 +18,6 @@ pub const AcpProtocolError = error{
 } || std.json.Error;
 
 const ServerSessionContext = struct {
-    server: *Server,
     session_state: *SessionStorage.SessionState,
     json_rpc_writer: *JsonRpcWriter,
 };
@@ -111,7 +110,6 @@ pub fn run(self: *Server, acp_config: Config) !void {
                 defer json_rpc_writer.deinit();
 
                 var ctx: ServerSessionContext = .{
-                    .server = self,
                     .session_state = session,
                     .json_rpc_writer = &json_rpc_writer,
                 };
