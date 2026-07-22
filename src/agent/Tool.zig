@@ -61,7 +61,7 @@ pub fn execute(self: *const Tool, allocator: Allocator, io: Io, id: []const u8, 
 /// result of the tool call.
 pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
     if (comptime expectsContext(execute_fn)) {
-        @compileError("Tool function '" ++ descriptor.name ++ "' expects a context parameter (?*anyopaque). Use Tool.initWithContext instead.");
+        @compileError("Tool function '" ++ descriptor.name ++ "' expects a context parameter (*anyopaque). Use Tool.initWithContext instead.");
     }
     return initInternal(descriptor, execute_fn, null);
 }
@@ -86,7 +86,7 @@ pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) T
 /// result of the tool call.
 pub fn initWithContext(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype, ctx: *anyopaque) Tool {
     if (comptime !expectsContext(execute_fn)) {
-        @compileError("Tool function '" ++ descriptor.name ++ "' does not take a context parameter (?*anyopaque). Use Tool.init instead.");
+        @compileError("Tool function '" ++ descriptor.name ++ "' does not take a context parameter (*anyopaque). Use Tool.init instead.");
     }
     return initInternal(descriptor, execute_fn, ctx);
 }
@@ -200,7 +200,7 @@ fn expectsContext(comptime execute_fn: anytype) bool {
 
     inline for (fn_info.params) |param| {
         if (param.type) |T| {
-            if (T == ?*anyopaque) return true;
+            if (T == *anyopaque) return true;
         }
     }
     return false;
@@ -231,7 +231,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         for (fn_info.params, 0..) |fn_param, i| {
             result_types[i] = fn_param.type.?;
 
-            if (fn_param.type.? != Allocator and fn_param.type.? != Io and fn_param.type.? != ?*anyopaque) {
+            if (fn_param.type.? != Allocator and fn_param.type.? != Io and fn_param.type.? != *anyopaque) {
                 if (param_idx >= descriptor_params.len) {
                     return .{ .err = .{ .code = ValidationError.ArgumentCountMismatch, .msg = "More arguments in function than descriptor." } };
                 }
@@ -267,7 +267,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                         args[func_idx] = allocator;
                     } else if (T == Io) {
                         args[func_idx] = io;
-                    } else if (T == ?*anyopaque) {
+                    } else if (T == *anyopaque) {
                         args[func_idx] = ctx.?;
                     } else {
                         const curr_descriptor = descriptor.parameters[descriptor_idx];
@@ -365,8 +365,8 @@ test initWithContext {
     var ctx_obj: CtxStruct = .{ .prefix = "ctx-" };
 
     const tool_impl = struct {
-        pub fn example_context_function(_: Allocator, arg1: i64, arg2: []const u8, ctx: ?*anyopaque) ![]const u8 {
-            const ctx_ptr: *CtxStruct = @ptrCast(@alignCast(ctx.?));
+        pub fn example_context_function(_: Allocator, arg1: i64, arg2: []const u8, ctx: *anyopaque) ![]const u8 {
+            const ctx_ptr: *CtxStruct = @ptrCast(@alignCast(ctx));
             return try std.fmt.allocPrint(allocator, "{s}{d}{s}", .{ ctx_ptr.prefix, arg1, arg2 });
         }
     };
@@ -989,7 +989,7 @@ test expectsContext {
         }
     };
     const ImplWithCtx = struct {
-        pub fn run(_: Allocator, _: i64, _: ?*anyopaque) ![]const u8 {
+        pub fn run(_: Allocator, _: i64, _: *anyopaque) ![]const u8 {
             return "";
         }
     };
@@ -1017,8 +1017,8 @@ test "execute - has context" {
     var ctx_obj: CtxStruct = .{ .prefix = "ctx-hello-" };
 
     const tool_impl = struct {
-        pub fn ctx_func(tool_allocator: Allocator, arg1: []const u8, ctx: ?*anyopaque) ![]const u8 {
-            const ctx_ptr: *CtxStruct = @ptrCast(@alignCast(ctx.?));
+        pub fn ctx_func(tool_allocator: Allocator, arg1: []const u8, ctx: *anyopaque) ![]const u8 {
+            const ctx_ptr: *CtxStruct = @ptrCast(@alignCast(ctx));
             return try std.fmt.allocPrint(tool_allocator, "{s}{s}", .{ ctx_ptr.prefix, arg1 });
         }
     };
