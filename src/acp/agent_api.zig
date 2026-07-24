@@ -7,6 +7,19 @@ pub const AgentResponse = struct {
     id: shared_api.RequestId,
     /// Method-specific response data.
     result: AgentResponseResult,
+
+    /// Stringify the response as a JSON object.
+    ///
+    /// Prepends `"jsonrpc": "2.0"` to the response.
+    ///
+    /// See https://www.jsonrpc.org/specification#response_object
+    pub fn jsonStringify(self: AgentResponse, jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("jsonrpc");
+        try jw.write("2.0");
+        try shared_api.jsonStringifyFields(self, jw);
+        try jw.endObject();
+    }
 };
 
 /// JSON-RPC 2.0 error codes used in agent error responses.
@@ -45,12 +58,23 @@ pub const JsonRpcError = struct {
 ///
 /// See https://www.jsonrpc.org/specification#error_object
 pub const AgentErrorResponse = struct {
-    /// JSON-RPC protocol version string (always "2.0").
-    jsonrpc: []const u8 = "2.0",
     /// The ID of the request this error response answers (or null if parsing failed).
     id: shared_api.RequestId,
     /// Error payload describing the failure.
     @"error": JsonRpcError,
+
+    /// Stringify the response as a JSON object.
+    ///
+    /// Prepends `"jsonrpc": "2.0"` to the response.
+    ///
+    /// See https://www.jsonrpc.org/specification#response_object
+    pub fn jsonStringify(self: AgentErrorResponse, jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("jsonrpc");
+        try jw.write("2.0");
+        try shared_api.jsonStringifyFields(self, jw);
+        try jw.endObject();
+    }
 };
 
 /// Union of all possible response data types.
