@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const llm = @import("llm");
+const SessionState = @import("SessionState.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -20,7 +21,7 @@ pub const CallError = error{
 } || std.mem.Allocator.Error;
 
 const Tool = @This();
-const ToolExecuteFn = *const fn (allocator: Allocator, io: Io, ctx: ?*anyopaque, args: []const Argument) CallError![]const u8;
+const ToolExecuteFn = *const fn (allocator: Allocator, io: Io, session_state: *SessionState, ctx: ?*anyopaque, args: []const Argument) CallError![]const u8;
 
 descriptor: llm.types.Tool,
 execute_fn: ToolExecuteFn,
@@ -30,14 +31,15 @@ ctx: ?*anyopaque,
 ///
 /// `allocator` is used to allocate memory for the result.
 /// `io` is the IO to use for the tool call.
+/// `session_state` is the session-scoped state object store to use for the tool call.
 /// `id` is the identifier of the tool call.
 /// `args` is the list of arguments to pass to the tool function. All required arguments must be present.
 /// Order is not relevant. Unexpected arguments are ignored.
 ///
 /// Returns a `ToolResult` containing the result of the tool call. The caller is responsible
 /// for freeing the `ToolResult` by calling `deinit()`.
-pub fn execute(self: *const Tool, allocator: Allocator, io: Io, id: []const u8, args: []const Argument) CallError!ToolResult {
-    const result = try self.execute_fn(allocator, io, self.ctx, args);
+pub fn execute(self: *const Tool, allocator: Allocator, io: Io, session_state: *SessionState, id: []const u8, args: []const Argument) CallError!ToolResult {
+    const result = try self.execute_fn(allocator, io, session_state, self.ctx, args);
     errdefer allocator.free(result);
     return ToolResult.initTakingResultOwnership(allocator, self.descriptor.name, id, result);
 }
@@ -54,7 +56,8 @@ pub fn execute(self: *const Tool, allocator: Allocator, io: Io, id: []const u8, 
 /// are still in the same order as the parameters in the descriptor.
 ///
 /// Additionally, the function can optionally accept an Io struct which represents the IO to use
-/// during the tool call.
+/// during the tool call, and/or a SessionState pointer (`*SessionState` or `*const SessionState`)
+/// which represents the session-scoped state.
 ///
 /// The `execute_fn` should return the result of the tool call as a string and transfer
 /// ownership of the memory to the caller. The result will be passed to the LLM as the
@@ -79,7 +82,8 @@ pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) T
 /// are still in the same order as the parameters in the descriptor.
 ///
 /// Additionally, the function can optionally accept an Io struct which represents the IO to use
-/// during the tool call.
+/// during the tool call, and/or a SessionState pointer (`*SessionState` or `*const SessionState`)
+/// which represents the session-scoped state.
 ///
 /// The `execute_fn` should return the result of the tool call as a string and transfer
 /// ownership of the memory to the caller. The result will be passed to the LLM as the
@@ -203,10 +207,15 @@ inline fn findArgument(args: []const Argument, name: []const u8) ?*const Argumen
     return null;
 }
 
+fn isSessionStateType(comptime T: type) bool {
+    return T == *SessionState or T == *const SessionState;
+}
+
 /// Returns true if type `T` represents a valid context pointer type.
 /// A context pointer type is a single-item pointer (e.g. `*MyCtx`, `*const MyCtx`, `*anyopaque`)
 /// or an optional single-item pointer (e.g. `?*MyCtx`).
 fn isContextType(comptime T: type) bool {
+    if (isSessionStateType(T)) return false;
     return switch (@typeInfo(T)) {
         .pointer => |ptr_info| ptr_info.size == .one,
         .optional => |opt_info| switch (@typeInfo(opt_info.child)) {
@@ -294,7 +303,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         for (fn_info.params, 0..) |fn_param, i| {
             result_types[i] = fn_param.type.?;
 
-            if (fn_param.type.? == Allocator or fn_param.type.? == Io) {
+            if (fn_param.type.? == Allocator or fn_param.type.? == Io or isSessionStateType(fn_param.type.?)) {
                 // Environment parameter
             } else if (isContextType(fn_param.type.?)) {
                 if (CtxType) |ProvidedCtxType| {
@@ -332,7 +341,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
     const TupleType = @Tuple(&types);
     return .{
         .ok = struct {
-            pub fn call(allocator: Allocator, io: Io, ctx: ?*anyopaque, input_args: []const Argument) CallError![]const u8 {
+            pub fn call(allocator: Allocator, io: Io, session_state: *SessionState, ctx: ?*anyopaque, input_args: []const Argument) CallError![]const u8 {
                 var args: TupleType = undefined;
                 comptime var descriptor_idx: usize = 0;
                 inline for (0..fn_info.params.len) |func_idx| {
@@ -341,6 +350,8 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                         args[func_idx] = allocator;
                     } else if (comptime T == Io) {
                         args[func_idx] = io;
+                    } else if (comptime isSessionStateType(T)) {
+                        args[func_idx] = session_state;
                     } else if (comptime (CtxType != null and isContextTypeCompatible(CtxType.?, T))) {
                         if (comptime @typeInfo(T) == .optional) {
                             args[func_idx] = if (ctx) |c| @ptrCast(@alignCast(c)) else null;
@@ -378,6 +389,8 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
 test init {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "example_function",
@@ -409,7 +422,7 @@ test init {
         .{ .name = "arg2", .value = .{ .string = "hello" } },
     };
 
-    var result = try tool.execute(allocator, io, "123", &args);
+    var result = try tool.execute(allocator, io, &session_state, "123", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("example_function", result.tool_name);
@@ -420,6 +433,8 @@ test init {
 test initWithContext {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "example_context_function",
@@ -454,7 +469,7 @@ test initWithContext {
         .{ .name = "arg2", .value = .{ .string = "hello" } },
     };
 
-    var result = try tool.execute(allocator, io, "123", &args);
+    var result = try tool.execute(allocator, io, &session_state, "123", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("example_context_function", result.tool_name);
@@ -656,6 +671,9 @@ test "makeExecuteFn - argument required in descriptor, optional in fn" {
 test execute {
     const testing_allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(testing_allocator);
+    defer session_state.deinit();
+
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -680,7 +698,7 @@ test execute {
             .value = .{ .string = "value" },
         },
     };
-    var result = try tool.execute(testing_allocator, io, "id", args);
+    var result = try tool.execute(testing_allocator, io, &session_state, "id", args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("test_tool", result.tool_name);
@@ -691,6 +709,9 @@ test execute {
 test "execute - unknown argument" {
     const testing_allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(testing_allocator);
+    defer session_state.deinit();
+
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -715,12 +736,15 @@ test "execute - unknown argument" {
             .value = .{ .string = "value" },
         },
     };
-    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, io, "id", args));
+    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, io, &session_state, "id", args));
 }
 
 test "execute - extra argument ignored" {
     const testing_allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(testing_allocator);
+    defer session_state.deinit();
+
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -749,7 +773,7 @@ test "execute - extra argument ignored" {
             .value = .{ .string = "value2" },
         },
     };
-    var result = try tool.execute(testing_allocator, io, "id", args);
+    var result = try tool.execute(testing_allocator, io, &session_state, "id", args);
     defer result.deinit();
     try std.testing.expectEqualStrings("value1", result.result);
 }
@@ -757,6 +781,9 @@ test "execute - extra argument ignored" {
 test "execute - missing required argument" {
     const testing_allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(testing_allocator);
+    defer session_state.deinit();
+
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -776,12 +803,15 @@ test "execute - missing required argument" {
     };
     const tool = Tool.init(desc, Impl.run);
     const args: []const Argument = &.{};
-    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, io, "id", args));
+    try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, io, &session_state, "id", args));
 }
 
 test "execute - missing optional argument" {
     const testing_allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(testing_allocator);
+    defer session_state.deinit();
+
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -802,7 +832,7 @@ test "execute - missing optional argument" {
     };
     const tool = Tool.init(desc, Impl.run);
     const args: []const Argument = &.{};
-    var result = try tool.execute(testing_allocator, io, "id", args);
+    var result = try tool.execute(testing_allocator, io, &session_state, "id", args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("test_tool", result.tool_name);
@@ -813,6 +843,9 @@ test "execute - missing optional argument" {
 test "execute - optional argument provided" {
     const testing_allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(testing_allocator);
+    defer session_state.deinit();
+
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -835,7 +868,7 @@ test "execute - optional argument provided" {
     const args: []const Argument = &.{
         .{ .name = "arg1", .value = .{ .string = "provided" } },
     };
-    var result = try tool.execute(testing_allocator, io, "id", args);
+    var result = try tool.execute(testing_allocator, io, &session_state, "id", args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("test_tool", result.tool_name);
@@ -846,6 +879,9 @@ test "execute - optional argument provided" {
 test "execute - argument type mismatch" {
     const testing_allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(testing_allocator);
+    defer session_state.deinit();
+
     const desc: llm.types.Tool = .{
         .name = "test_tool",
         .description = "desc",
@@ -870,12 +906,14 @@ test "execute - argument type mismatch" {
             .value = .{ .integer = 10 },
         },
     };
-    try std.testing.expectError(CallError.ArgumentTypeMismatch, tool.execute(testing_allocator, io, "id", args));
+    try std.testing.expectError(CallError.ArgumentTypeMismatch, tool.execute(testing_allocator, io, &session_state, "id", args));
 }
 
 test "execute - no Allocator parameter" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "no_allocator_func",
@@ -900,7 +938,7 @@ test "execute - no Allocator parameter" {
         .{ .name = "arg1", .value = .{ .string = "hello" } },
     };
 
-    var result = try tool.execute(allocator, io, "abc", &args);
+    var result = try tool.execute(allocator, io, &session_state, "abc", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("no_allocator_func", result.tool_name);
@@ -911,6 +949,8 @@ test "execute - no Allocator parameter" {
 test "execute - Allocator as middle/last parameter" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "middle_last_allocator_func",
@@ -942,7 +982,7 @@ test "execute - Allocator as middle/last parameter" {
         .{ .name = "arg2", .value = .{ .string = "test" } },
     };
 
-    var result = try tool.execute(allocator, io, "xyz", &args);
+    var result = try tool.execute(allocator, io, &session_state, "xyz", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("middle_last_allocator_func", result.tool_name);
@@ -953,6 +993,8 @@ test "execute - Allocator as middle/last parameter" {
 test "execute - multiple Allocator parameters" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "multi_allocator_func",
@@ -978,7 +1020,7 @@ test "execute - multiple Allocator parameters" {
         .{ .name = "arg1", .value = .{ .integer = 7 } },
     };
 
-    var result = try tool.execute(allocator, io, "multi", &args);
+    var result = try tool.execute(allocator, io, &session_state, "multi", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("multi_allocator_func", result.tool_name);
@@ -989,6 +1031,8 @@ test "execute - multiple Allocator parameters" {
 test "execute - Io parameter" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "io_func",
@@ -1014,7 +1058,7 @@ test "execute - Io parameter" {
         .{ .name = "arg1", .value = .{ .string = "test" } },
     };
 
-    var result = try tool.execute(allocator, io, "io-test", &args);
+    var result = try tool.execute(allocator, io, &session_state, "io-test", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("io_func", result.tool_name);
@@ -1025,6 +1069,8 @@ test "execute - Io parameter" {
 test "execute - multiple Io parameters" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "multi_io_func",
@@ -1051,7 +1097,7 @@ test "execute - multiple Io parameters" {
         .{ .name = "arg1", .value = .{ .integer = 77 } },
     };
 
-    var result = try tool.execute(allocator, io, "multi-io", &args);
+    var result = try tool.execute(allocator, io, &session_state, "multi-io", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("multi_io_func", result.tool_name);
@@ -1076,14 +1122,22 @@ test expectsContext {
             return "";
         }
     };
+    const ImplWithSessionState = struct {
+        pub fn run(_: Allocator, _: *SessionState, _: i64) ![]const u8 {
+            return "";
+        }
+    };
     try std.testing.expect(!expectsContext(ImplNoCtx.run));
     try std.testing.expect(expectsContext(ImplWithCtx.run));
     try std.testing.expect(expectsContext(ImplWithTypedCtx.run));
+    try std.testing.expect(!expectsContext(ImplWithSessionState.run));
 }
 
 test "execute - has context" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "ctx_func",
@@ -1112,7 +1166,7 @@ test "execute - has context" {
         .{ .name = "arg1", .value = .{ .string = "world" } },
     };
 
-    var result = try tool.execute(allocator, io, "ctx-id", &args);
+    var result = try tool.execute(allocator, io, &session_state, "ctx-id", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("ctx_func", result.tool_name);
@@ -1123,6 +1177,8 @@ test "execute - has context" {
 test "execute - const and optional context pointers" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "const_ctx_func",
@@ -1155,25 +1211,25 @@ test "execute - const and optional context pointers" {
 
     // const -> const
     const tool_const1 = initWithContext(tool_descriptor, tool_impl.const_ctx_func, &const_ctx_obj);
-    var res_const1 = try tool_const1.execute(allocator, io, "id1", &args);
+    var res_const1 = try tool_const1.execute(allocator, io, &session_state, "id1", &args);
     defer res_const1.deinit();
     try std.testing.expectEqualStrings("50", res_const1.result);
 
     // non-const -> const
     const tool_const2 = initWithContext(tool_descriptor, tool_impl.const_ctx_func, &mut_ctx_obj);
-    var res_const2 = try tool_const2.execute(allocator, io, "id2", &args);
+    var res_const2 = try tool_const2.execute(allocator, io, &session_state, "id2", &args);
     defer res_const2.deinit();
     try std.testing.expectEqualStrings("50", res_const2.result);
 
     // const -> optional const
     const tool_opt1 = initWithContext(tool_descriptor, tool_impl.optional_ctx_func, &const_ctx_obj);
-    var res_opt1 = try tool_opt1.execute(allocator, io, "id3", &args);
+    var res_opt1 = try tool_opt1.execute(allocator, io, &session_state, "id3", &args);
     defer res_opt1.deinit();
     try std.testing.expectEqualStrings("50", res_opt1.result);
 
     // non-const -> optional const
     const tool_opt2 = initWithContext(tool_descriptor, tool_impl.optional_ctx_func, &mut_ctx_obj);
-    var res_opt2 = try tool_opt2.execute(allocator, io, "id4", &args);
+    var res_opt2 = try tool_opt2.execute(allocator, io, &session_state, "id4", &args);
     defer res_opt2.deinit();
     try std.testing.expectEqualStrings("50", res_opt2.result);
 }
@@ -1181,6 +1237,8 @@ test "execute - const and optional context pointers" {
 test "execute - multiple context pointers" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
 
     const tool_descriptor: llm.types.Tool = .{
         .name = "multi_ctx_func",
@@ -1207,7 +1265,7 @@ test "execute - multiple context pointers" {
     const tool = initWithContext(tool_descriptor, tool_impl.multi_ctx_func, &ctx_obj);
     const args = [_]Argument{.{ .name = "val", .value = .{ .integer = 10 } }};
 
-    var res = try tool.execute(allocator, io, "id_multi", &args);
+    var res = try tool.execute(allocator, io, &session_state, "id_multi", &args);
     defer res.deinit();
     try std.testing.expectEqualStrings("24", res.result);
 }
@@ -1223,3 +1281,59 @@ test isContextTypeCompatible {
     try std.testing.expect(!isContextTypeCompatible(*Foo, *Bar));
     try std.testing.expect(!isContextTypeCompatible(*const Foo, *Foo));
 }
+
+test "execute - SessionState parameter variants" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
+
+    const CounterState = struct {
+        count: i64,
+        fn initFn(self: *@This(), _: Allocator) !void {
+            self.count = 0;
+        }
+    };
+
+    const tool_descriptor: llm.types.Tool = .{
+        .name = "counter_tool",
+        .description = "Increments counter in SessionState",
+        .parameters = &.{
+            .{
+                .name = "increment",
+                .type = .integer,
+                .required = true,
+                .description = "amount to increment",
+            },
+        },
+    };
+
+    const tool_impl = struct {
+        pub fn increment(alloc: Allocator, state: *SessionState, inc: i64) CallError![]const u8 {
+            const counter = state.getOrInit(CounterState, CounterState.initFn) catch return error.OutOfMemory;
+            counter.count += inc;
+            return try std.fmt.allocPrint(alloc, "Count: {d}", .{counter.count});
+        }
+        pub fn read_const(alloc: Allocator, state: *const SessionState, inc: i64) CallError![]const u8 {
+            const count = if (state.get(CounterState)) |c| c.count else 0;
+            return try std.fmt.allocPrint(alloc, "ConstCount: {d}", .{count + inc});
+        }
+    };
+
+    const args = [_]Argument{.{ .name = "increment", .value = .{ .integer = 5 } }};
+
+    const tool_inc = init(tool_descriptor, tool_impl.increment);
+    var res1 = try tool_inc.execute(allocator, io, &session_state, "id1", &args);
+    defer res1.deinit();
+    try std.testing.expectEqualStrings("Count: 5", res1.result);
+
+    var res2 = try tool_inc.execute(allocator, io, &session_state, "id2", &args);
+    defer res2.deinit();
+    try std.testing.expectEqualStrings("Count: 10", res2.result);
+
+    const tool_read = init(tool_descriptor, tool_impl.read_const);
+    var res3 = try tool_read.execute(allocator, io, &session_state, "id3", &args);
+    defer res3.deinit();
+    try std.testing.expectEqualStrings("ConstCount: 15", res3.result);
+}
+

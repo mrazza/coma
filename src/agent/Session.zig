@@ -8,6 +8,7 @@ const std = @import("std");
 const llm = @import("llm");
 const Tool = @import("Tool.zig");
 const types = @import("types.zig");
+const SessionState = @import("SessionState.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -22,6 +23,7 @@ provider: Provider,
 tools: []const Tool,
 session_config: llm.types.SessionConfig,
 prev_continuation: ?llm.types.StepContinuation,
+session_state: SessionState,
 
 const ToolError = error{ToolNotFound} || Tool.CallError;
 pub const SessionError = ToolError || Provider.ProviderError;
@@ -49,6 +51,7 @@ pub fn init(allocator: Allocator, io: Io, provider: Provider, config: types.Sess
             .tools = descriptors,
         },
         .prev_continuation = null,
+        .session_state = .init(allocator),
     };
 }
 
@@ -58,6 +61,7 @@ pub fn deinit(self: *Session) void {
         ls.deinit();
         self.prev_continuation = null;
     }
+    self.session_state.deinit();
     self.allocator.free(self.session_config.tools);
 }
 
@@ -113,7 +117,7 @@ fn executeToolCall(self: *Session, tool_call: llm.types.ToolCall) ToolError!llm.
         return ToolError.ToolNotFound;
     };
 
-    return try tool.execute(self.allocator, self.io, tool_call.id, tool_call.arguments);
+    return try tool.execute(self.allocator, self.io, &self.session_state, tool_call.id, tool_call.arguments);
 }
 
 fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*StreamingContext) SessionError!types.TurnResult {
@@ -615,3 +619,79 @@ test "Session.executeTurn - tool call error cleanup" {
     const turn = types.Turn{ .prompt = "Run error_tool" };
     try std.testing.expectError(error.ArgumentTypeMismatch, session.executeTurn(turn));
 }
+
+test "Session.executeTurn - tool receives SessionState" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var mock_provider = testing.MockProvider{};
+    const prov = mock_provider.provider();
+
+    const StateObj = struct {
+        value: i64,
+        fn initFn(self: *@This(), _: Allocator) !void {
+            self.value = 0;
+        }
+    };
+
+    const tool_desc = llm.types.Tool{
+        .name = "state_tool",
+        .description = "A tool that interacts with SessionState",
+        .parameters = &.{
+            .{
+                .name = "val",
+                .description = "integer value",
+                .type = .integer,
+                .required = true,
+            },
+        },
+    };
+
+    const state_tool_impl = struct {
+        fn execute(alloc: Allocator, state: *SessionState, val: i64) Tool.CallError![]const u8 {
+            const obj = state.getOrInit(StateObj, StateObj.initFn) catch return error.OutOfMemory;
+            obj.value += val;
+            return try std.fmt.allocPrint(alloc, "State value is {d}", .{obj.value});
+        }
+    };
+    const tool = Tool.init(tool_desc, state_tool_impl.execute);
+    const tools = &[_]Tool{tool};
+
+    var session = try Session.init(
+        allocator,
+        io,
+        prov,
+        .{
+            .model = .{ .id = "mock-model", .display_name = "Mock Model" },
+            .tools = tools,
+        },
+    );
+    defer session.deinit();
+
+    const args = [_]llm.types.Argument{
+        .{ .name = "val", .value = .{ .integer = 50 } },
+    };
+    const tool_calls = [_]llm.types.ToolCall{
+        .{
+            .id = "call-id-123",
+            .name = "state_tool",
+            .arguments = @constCast(&args),
+        },
+    };
+
+    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    const result2 = testing.MockProvider.stepResult(&.{.{ .text = "Done" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = result2, .continuation = testing.MockProvider.stepContinuation() },
+    };
+    mock_provider.execute_step_results = &outcomes;
+
+    const turn = types.Turn{ .prompt = "Run state_tool" };
+    var turn_res = try session.executeTurn(turn);
+    defer turn_res.deinit();
+
+    const state_obj = session.session_state.get(StateObj);
+    try std.testing.expect(state_obj != null);
+    try std.testing.expectEqual(@as(i64, 50), state_obj.?.value);
+}
+
