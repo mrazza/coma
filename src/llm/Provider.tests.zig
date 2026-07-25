@@ -17,6 +17,7 @@ test "Provider.listModels delegates to VTable" {
 test "Provider.executeStep delegates to VTable" {
     const allocator = std.testing.allocator;
     var mock_impl = testing.MockProvider{};
+    defer mock_impl.deinit();
     var prov = mock_impl.provider();
 
     const model = llm.types.Model{
@@ -37,7 +38,7 @@ test "Provider.executeStep delegates to VTable" {
     try std.testing.expectEqual(@as(usize, 1), mock_impl.execute_step_calls);
     try std.testing.expectEqual(allocator, mock_impl.last_allocator.?);
     try std.testing.expectEqualStrings("test-model-id", mock_impl.last_session_config.?.model.id);
-    try std.testing.expectEqualStrings("hello", mock_impl.last_input.?[0].prompt);
+    try std.testing.expectEqualStrings("hello", mock_impl.last_input_steps.?[0].prompt);
     try std.testing.expectEqual(last_step_continuation.ptr, mock_impl.last_previous_step.?.ptr);
 }
 
@@ -121,6 +122,7 @@ test "Provider.executeStep returns custom success and error" {
 test "Provider.executeStepStreaming delegates to VTable" {
     const allocator = std.testing.allocator;
     var mock_impl = testing.MockProvider{};
+    defer mock_impl.deinit();
     var prov = mock_impl.provider();
 
     const model = llm.types.Model{
@@ -149,7 +151,7 @@ test "Provider.executeStepStreaming delegates to VTable" {
     try std.testing.expectEqual(@as(usize, 0), mock_impl.execute_step_calls);
     try std.testing.expectEqual(allocator, mock_impl.last_allocator.?);
     try std.testing.expectEqualStrings("test-model-id", mock_impl.last_session_config.?.model.id);
-    try std.testing.expectEqualStrings("hello", mock_impl.last_input.?[0].prompt);
+    try std.testing.expectEqualStrings("hello", mock_impl.last_input_steps.?[0].prompt);
     try std.testing.expectEqual(prev_continuation.ptr, mock_impl.last_previous_step.?.ptr);
 }
 

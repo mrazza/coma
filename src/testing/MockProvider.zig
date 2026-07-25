@@ -29,7 +29,7 @@ last_allocator: ?Allocator = null,
 /// Stores the session configuration from the last `executeStep` call.
 last_session_config: ?SessionConfig = null,
 /// Stores the input steps from the last `executeStep` call.
-last_input: ?[]const Step = null,
+last_input_steps: ?[]const Step = null,
 /// Stores the previous step from the last `executeStep` call.
 last_previous_step: ?StepContinuation = null,
 
@@ -46,7 +46,7 @@ const vtable = Provider.VTable{
     .list_models = MockProvider.list_models,
     .execute_step = MockProvider.execute_step,
     .execute_step_streaming = MockProvider.execute_step_streaming,
-    .deinit = MockProvider.deinit,
+    .deinit = MockProvider.deinitVtable,
 };
 
 /// Returns the generic `llm.Provider` interface for this mock instance.
@@ -92,6 +92,41 @@ fn list_models(ptr: *anyopaque, allocator: Allocator) Provider.ProviderError!Lis
     };
 }
 
+fn clearLastInputSteps(self: *MockProvider) void {
+    if (self.last_input_steps) |steps| {
+        if (self.last_allocator) |alloc| {
+            for (steps) |step| {
+                switch (step) {
+                    .prompt => |p| alloc.free(p),
+                    .tool_result => {},
+                }
+            }
+            alloc.free(steps);
+        }
+        self.last_input_steps = null;
+    }
+}
+
+fn recordInputSteps(self: *MockProvider, allocator: Allocator, input: []const Step) void {
+    self.clearLastInputSteps();
+    var list: std.ArrayList(Step) = .empty;
+    for (input) |step| {
+        switch (step) {
+            .prompt => |p| {
+                const p_copy = allocator.dupe(u8, p) catch return;
+                list.append(allocator, .{ .prompt = p_copy }) catch {
+                    allocator.free(p_copy);
+                    return;
+                };
+            },
+            .tool_result => |tr| {
+                list.append(allocator, .{ .tool_result = tr }) catch return;
+            },
+        }
+    }
+    self.last_input_steps = list.toOwnedSlice(allocator) catch return;
+}
+
 /// Mock implementation of `executeStep`.
 fn execute_step(
     ptr: *anyopaque,
@@ -104,7 +139,7 @@ fn execute_step(
     self.execute_step_calls += 1;
     self.last_allocator = allocator;
     self.last_session_config = session_config;
-    self.last_input = input;
+    self.recordInputSteps(allocator, input);
     self.last_previous_step = previous_step;
     if (self.execute_step_results) |results| {
         if (results.len == 0) {
@@ -145,7 +180,7 @@ fn execute_step_streaming(
     self.execute_step_streaming_calls += 1;
     self.last_allocator = allocator;
     self.last_session_config = session_config;
-    self.last_input = input;
+    self.recordInputSteps(allocator, input);
     self.last_previous_step = previous_step;
     if (self.execute_step_streaming_chunks) |chunks_list| {
         if (chunks_list.len > 0) {
@@ -170,7 +205,7 @@ fn execute_step_streaming(
         } else if (self.execute_step_results_loop) {
             return results[call_idx % results.len];
         } else {
-            @panic("execute_step_streaming called more times than available outcomes");
+            @panic("execute_step called more times than available outcomes");
         }
     }
     return StepOutcome{
@@ -186,9 +221,14 @@ fn execute_step_streaming(
 }
 
 /// Mock implementation of `deinit`.
-fn deinit(ptr: *anyopaque) void {
-    const self: *MockProvider = @ptrCast(@alignCast(ptr));
+fn deinitVtable(ctx: *anyopaque) void {
+    const self: *MockProvider = @ptrCast(@alignCast(ctx));
+    deinit(self);
+}
+
+pub fn deinit(self: *MockProvider) void {
     self.deinit_calls += 1;
+    self.clearLastInputSteps();
 }
 
 /// Helper constructor to create a mock `StepResult` with standard mock vtable.
