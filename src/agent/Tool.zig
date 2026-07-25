@@ -95,7 +95,7 @@ pub fn initWithContext(comptime descriptor: llm.types.Tool, comptime execute_fn:
 }
 
 fn initInternal(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype, ctx: anytype) Tool {
-    const CtxType: ?type = if (@TypeOf(ctx) == @TypeOf(null)) null else @TypeOf(ctx);
+    const CtxType: ?type = comptime if (@TypeOf(ctx) == @TypeOf(null)) null else @TypeOf(ctx);
 
     var value = comptime blk: {
         for (descriptor.parameters, 0..) |p1, i| {
@@ -118,7 +118,7 @@ fn initInternal(comptime descriptor: llm.types.Tool, comptime execute_fn: anytyp
     };
 
     value.ctx = blk: {
-        if (CtxType == null) break :blk null;
+        if (comptime CtxType == null) break :blk null;
 
         if (comptime @typeInfo(CtxType.?) == .optional) {
             const ptr = ctx orelse break :blk null;
@@ -263,7 +263,7 @@ fn expectsContext(comptime execute_fn: anytype) bool {
 
     inline for (fn_info.params) |param| {
         if (param.type) |T| {
-            if (isContextType(T)) return true;
+            if (comptime isContextType(T)) return true;
         }
     }
     return false;
@@ -334,21 +334,21 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         .ok = struct {
             pub fn call(allocator: Allocator, io: Io, ctx: ?*anyopaque, input_args: []const Argument) CallError![]const u8 {
                 var args: TupleType = undefined;
-                var descriptor_idx: usize = 0;
+                comptime var descriptor_idx: usize = 0;
                 inline for (0..fn_info.params.len) |func_idx| {
                     const T = types[func_idx];
-                    if (T == Allocator) {
+                    if (comptime T == Allocator) {
                         args[func_idx] = allocator;
-                    } else if (T == Io) {
+                    } else if (comptime T == Io) {
                         args[func_idx] = io;
-                    } else if (comptime CtxType != null and isContextTypeCompatible(CtxType.?, T)) {
+                    } else if (comptime (CtxType != null and isContextTypeCompatible(CtxType.?, T))) {
                         if (comptime @typeInfo(T) == .optional) {
                             args[func_idx] = if (ctx) |c| @ptrCast(@alignCast(c)) else null;
                         } else {
                             args[func_idx] = @ptrCast(@alignCast(ctx.?));
                         }
                     } else {
-                        const curr_descriptor = descriptor.parameters[descriptor_idx];
+                        const curr_descriptor = comptime descriptor.parameters[descriptor_idx];
                         descriptor_idx += 1;
                         if (findArgument(input_args, curr_descriptor.name)) |argument| {
                             const expected_tag = comptime try expectedTagForType(T);
@@ -362,8 +362,8 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                                 .boolean => argument.value.boolean,
                             };
                         } else {
-                            if (curr_descriptor.required) return CallError.RequiredArgumentMissing;
-                            if (@typeInfo(@TypeOf(args[func_idx])) != .optional) unreachable;
+                            if (comptime curr_descriptor.required) return CallError.RequiredArgumentMissing;
+                            if (comptime @typeInfo(@TypeOf(args[func_idx])) != .optional) unreachable;
                             args[func_idx] = null;
                         }
                     }
