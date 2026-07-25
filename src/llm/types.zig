@@ -7,7 +7,9 @@ pub const SessionConfig = struct {
     /// The model to be used for the session.
     model: Model,
     /// A list of tools available for the model to use during the session.
-    tools: []const Tool,
+    tools: []const Tool = &.{},
+    /// The system prompt to be used for the session.
+    system_prompt: ?[]const u8 = null,
 };
 
 /// Represents an LLM model provided by the backend.

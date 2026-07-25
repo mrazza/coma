@@ -220,6 +220,7 @@ pub const CreateInteractionRequest = struct {
 
     model: []const u8,
     input: []const CreateInteractionRequest.Step,
+    system_instruction: ?[]const u8,
     previous_interaction_id: ?[]const u8 = null,
     generation_config: GenerationConfig = .{},
     tools: []const Tool,

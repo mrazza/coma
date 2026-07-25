@@ -134,6 +134,7 @@ fn MakeProvider(comptime ClientType: type) type {
                 .tools = tools,
                 .previous_interaction_id = if (previous_gemini_step) |step| step.interaction_id else null,
                 .stream = stream,
+                .system_instruction = session_config.system_prompt,
             };
 
             return .{ .uri = uri, .payload = request_payload };
@@ -503,7 +504,6 @@ test "Gemini.executeStep success" {
 
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
-        .tools = &.{},
     };
     const input = &[_]llm.types.Step{
         .{ .prompt = "Hello" },
@@ -599,7 +599,6 @@ test "Gemini.executeStep with previous step" {
 
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
-        .tools = &.{},
     };
 
     // First call
@@ -724,7 +723,6 @@ test "Gemini.executeStep HTTP failure" {
 
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
-        .tools = &.{},
     };
     const input = &[_]llm.types.Step{
         .{ .prompt = "Hello" },
@@ -736,7 +734,7 @@ test "Gemini.executeStep HTTP failure" {
 test "Gemini.executeStepStreaming success" {
     const allocator = std.testing.allocator;
 
-    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}";
+    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"system_instruction\":null,\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}";
     const response_body =
         \\event: interaction.created
         \\data: {"event_type":"interaction.created","interaction":{"id":"interaction_streaming_123"}}
@@ -803,7 +801,6 @@ test "Gemini.executeStepStreaming success" {
 
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
-        .tools = &.{},
     };
     const input = &[_]llm.types.Step{
         .{ .prompt = "Hello" },
@@ -891,7 +888,7 @@ test "Gemini.executeStepStreaming success" {
 test "Gemini.executeStepStreaming with CRLF line endings" {
     const allocator = std.testing.allocator;
 
-    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}";
+    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"system_instruction\":null,\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}";
     const response_body_lf =
         \\event: interaction.created
         \\data: {"event_type":"interaction.created","interaction":{"id":"interaction_streaming_123"}}
@@ -966,7 +963,6 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
 
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
-        .tools = &.{},
     };
     const input = &[_]llm.types.Step{
         .{ .prompt = "Hello" },
@@ -1091,7 +1087,6 @@ test "Gemini.executeStep returns function call" {
 
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
-        .tools = &.{},
     };
 
     var outcome = try p.executeStep(allocator, config, &.{}, null);
@@ -1133,7 +1128,7 @@ test "Gemini.executeStepStreaming multiple interaction_created" {
                 .expected_path = "/v1beta/interactions",
                 .expected_query = "key=TEST_API_KEY",
                 .expected_method = .POST,
-                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"system_instruction\":null,\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
                 .response_status = .ok,
                 .response_body = payload,
             },
@@ -1144,7 +1139,6 @@ test "Gemini.executeStepStreaming multiple interaction_created" {
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
-        .tools = &.{},
     };
     try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null));
 }
@@ -1173,7 +1167,7 @@ test "Gemini.executeStepStreaming duplicate step start" {
                 .expected_path = "/v1beta/interactions",
                 .expected_query = "key=TEST_API_KEY",
                 .expected_method = .POST,
-                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"system_instruction\":null,\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
                 .response_status = .ok,
                 .response_body = payload,
             },
@@ -1184,7 +1178,6 @@ test "Gemini.executeStepStreaming duplicate step start" {
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
-        .tools = &.{},
     };
     try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null));
 }
@@ -1212,7 +1205,7 @@ test "Gemini.executeStepStreaming delta for non-existent step index" {
                 .expected_path = "/v1beta/interactions",
                 .expected_query = "key=TEST_API_KEY",
                 .expected_method = .POST,
-                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"system_instruction\":null,\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
                 .response_status = .ok,
                 .response_body = payload,
             },
@@ -1223,7 +1216,6 @@ test "Gemini.executeStepStreaming delta for non-existent step index" {
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
-        .tools = &.{},
     };
     try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null));
 }
@@ -1252,7 +1244,7 @@ test "Gemini.executeStepStreaming mismatched interaction completed ID" {
                 .expected_path = "/v1beta/interactions",
                 .expected_query = "key=TEST_API_KEY",
                 .expected_method = .POST,
-                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"system_instruction\":null,\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
                 .response_status = .ok,
                 .response_body = payload,
             },
@@ -1263,7 +1255,6 @@ test "Gemini.executeStepStreaming mismatched interaction completed ID" {
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
-        .tools = &.{},
     };
     try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null));
 }
@@ -1291,7 +1282,7 @@ test "Gemini.executeStepStreaming fallback interaction ID to unknown" {
                 .expected_path = "/v1beta/interactions",
                 .expected_query = "key=TEST_API_KEY",
                 .expected_method = .POST,
-                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
+                .expected_payload = "{\"model\":\"gemini-model\",\"input\":[],\"system_instruction\":null,\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}",
                 .response_status = .ok,
                 .response_body = payload,
             },
@@ -1302,7 +1293,6 @@ test "Gemini.executeStepStreaming fallback interaction ID to unknown" {
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
-        .tools = &.{},
     };
     var outcome = try p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null);
     defer outcome.result.deinit();
@@ -1340,7 +1330,7 @@ test "StepContinuation.init OOM" {
 test "Gemini.executeStepStreaming malformed stream payload" {
     const allocator = std.testing.allocator;
 
-    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}";
+    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"system_instruction\":null,\"previous_interaction_id\":null,\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":true}";
     const response_body =
         \\event: step.delta
         \\data: {invalid_json
@@ -1372,7 +1362,6 @@ test "Gemini.executeStepStreaming malformed stream payload" {
 
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
-        .tools = &.{},
     };
     const input = &[_]llm.types.Step{
         .{ .prompt = "Hello" },
@@ -1386,4 +1375,63 @@ test "Gemini.executeStepStreaming malformed stream payload" {
     };
 
     try std.testing.expectError(error.BadResponse, p.executeStepStreaming(allocator, config, input, null, CallbackState.callback, null));
+}
+
+test "Gemini.executeStep with system prompt" {
+    const allocator = std.testing.allocator;
+
+    const expected_payload = "{\"model\":\"gemini-2.0-flash\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]}],\"system_instruction\":\"You are a helpful assistant.\",\"generation_config\":{\"thinking_summaries\":\"auto\"},\"tools\":[],\"stream\":false}";
+    const response_json =
+        \\{
+        \\  "id": "interaction_sp",
+        \\  "steps": [
+        \\    {
+        \\      "type": "model_output",
+        \\      "content": [
+        \\        {
+        \\          "type": "text",
+        \\          "text": "Hello user!"
+        \\        }
+        \\      ]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var call_counts = [_]usize{0};
+    const mock_client = testing.MockHttpClient{
+        .allocator = allocator,
+        .expectations = &.{
+            .{
+                .expected_scheme = "https",
+                .expected_host = "generativelanguage.googleapis.com",
+                .expected_path = "/v1beta/interactions",
+                .expected_query = "key=TEST_API_KEY",
+                .expected_method = .POST,
+                .expected_payload = expected_payload,
+                .response_status = .ok,
+                .response_body = response_json,
+            },
+        },
+        .sequential = false,
+        .call_counts = &call_counts,
+    };
+
+    var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
+    var p = prov.provider();
+    defer p.deinit();
+
+    const config = llm.types.SessionConfig{
+        .model = .{ .id = "gemini-2.0-flash", .display_name = "Gemini 2.0 Flash" },
+        .system_prompt = "You are a helpful assistant.",
+    };
+    const input = &[_]llm.types.Step{
+        .{ .prompt = "Hello" },
+    };
+
+    var outcome = try p.executeStep(allocator, config, input, null);
+    defer outcome.result.deinit();
+    defer outcome.continuation.deinit();
+
+    try std.testing.expectEqual(1, call_counts[0]);
 }
