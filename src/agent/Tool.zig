@@ -1310,12 +1310,12 @@ test "execute - SessionState parameter variants" {
 
     const tool_impl = struct {
         pub fn increment(alloc: Allocator, state: *SessionState, inc: i64) CallError![]const u8 {
-            const counter = state.getOrInit(CounterState, CounterState.initFn) catch return error.OutOfMemory;
+            const counter = state.getOrInitState(CounterState, CounterState.initFn) catch return error.OutOfMemory;
             counter.count += inc;
             return try std.fmt.allocPrint(alloc, "Count: {d}", .{counter.count});
         }
         pub fn read_const(alloc: Allocator, state: *const SessionState, inc: i64) CallError![]const u8 {
-            const count = if (state.get(CounterState)) |c| c.count else 0;
+            const count = if (state.getState(CounterState)) |c| c.count else 0;
             return try std.fmt.allocPrint(alloc, "ConstCount: {d}", .{count + inc});
         }
     };
@@ -1336,4 +1336,3 @@ test "execute - SessionState parameter variants" {
     defer res3.deinit();
     try std.testing.expectEqualStrings("ConstCount: 15", res3.result);
 }
-

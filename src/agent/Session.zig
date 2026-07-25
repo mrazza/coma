@@ -141,6 +141,12 @@ fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*Str
     }
 
     while (true) {
+        const maybe_context = try self.session_state.getInjectedContextString(allocator);
+        defer if (maybe_context) |context_str| allocator.free(context_str);
+        if (maybe_context) |context_str| {
+            try next_steps.insert(allocator, 0, .{ .prompt = context_str });
+        }
+
         const step_outcome = if (callback_context) |cb|
             try self.provider.executeStepStreaming(
                 allocator,
@@ -222,6 +228,7 @@ test "Session.executeTurn - no tool calls" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
     const mock_model = llm.types.Model{
@@ -255,6 +262,7 @@ test "Session.executeTurnStreaming - no tool calls" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
     const mock_model = llm.types.Model{
@@ -307,6 +315,7 @@ test "Session.executeTurn - executes tool call and runs again" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
     const tool_desc = llm.types.Tool{
@@ -381,6 +390,7 @@ test "Session.executeTurnStreaming - model chunks streaming" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
     var session = try Session.init(
@@ -466,6 +476,7 @@ test "Session.executeTurnStreaming - with tool calls" {
     const io = std.testing.io;
 
     var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
     const args_buf = [_]llm.types.Argument{
@@ -550,6 +561,7 @@ test "Session.executeToolCall - tool not found" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
     var session = try Session.init(
@@ -576,6 +588,7 @@ test "Session.executeTurn - tool call error cleanup" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
     const tool_desc = llm.types.Tool{
@@ -625,6 +638,7 @@ test "Session.executeTurn - tool receives SessionState" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
     const StateObj = struct {
@@ -649,7 +663,7 @@ test "Session.executeTurn - tool receives SessionState" {
 
     const state_tool_impl = struct {
         fn execute(alloc: Allocator, state: *SessionState, val: i64) Tool.CallError![]const u8 {
-            const obj = state.getOrInit(StateObj, StateObj.initFn) catch return error.OutOfMemory;
+            const obj = state.getOrInitState(StateObj, StateObj.initFn) catch return error.OutOfMemory;
             obj.value += val;
             return try std.fmt.allocPrint(alloc, "State value is {d}", .{obj.value});
         }
@@ -691,7 +705,7 @@ test "Session.executeTurn - tool receives SessionState" {
     var turn_res = try session.executeTurn(turn);
     defer turn_res.deinit();
 
-    const state_obj = session.session_state.get(StateObj);
+    const state_obj = session.session_state.getState(StateObj);
     try std.testing.expect(state_obj != null);
     try std.testing.expectEqual(@as(i64, 50), state_obj.?.value);
 }
@@ -700,6 +714,7 @@ test "Session.init forwards system_prompt to session_config" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var mock_provider: testing.MockProvider = .{};
+    defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
     var session = try Session.init(
@@ -716,3 +731,107 @@ test "Session.init forwards system_prompt to session_config" {
     try std.testing.expectEqualStrings("Custom system prompt", session.session_config.system_prompt.?);
 }
 
+test "Session.executeTurn prepends injected context from session_state" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
+    const prov = mock_provider.provider();
+
+    const tool_desc = llm.types.Tool{
+        .name = "ctx_tool",
+        .description = "Tool with context",
+        .parameters = &.{},
+    };
+    const tool_impl = struct {
+        pub fn run() ![]const u8 {
+            return "";
+        }
+    };
+    const tool = Tool.init(tool_desc, tool_impl.run);
+
+    var session = try Session.init(allocator, io, prov, .{
+        .model = .{ .id = "mock-model", .display_name = "Mock Model" },
+        .tools = &.{tool},
+    });
+    defer session.deinit();
+
+    try session.session_state.setInjectedContext(&session.tools[0], "Injected tool info");
+
+    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Response text" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
+    };
+    mock_provider.execute_step_results = &outcomes;
+
+    const turn = types.Turn{ .prompt = "Hello with context" };
+    var result = try session.executeTurn(turn);
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, mock_provider.last_input_steps.?.len);
+    const expected_ctx = "[TOOL_CONTEXT: ctx_tool]\nInjected tool info\n[/TOOL_CONTEXT]\n\n";
+    try std.testing.expectEqualStrings(expected_ctx, mock_provider.last_input_steps.?[0].prompt);
+    try std.testing.expectEqualStrings("Hello with context", mock_provider.last_input_steps.?[1].prompt);
+}
+
+test "Session.executeTurn prepends injected context added during tool execution" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
+    const prov = mock_provider.provider();
+
+    const dummy_tool_desc = llm.types.Tool{
+        .name = "context_setter_tool",
+        .description = "Tool that sets injected context",
+        .parameters = &.{},
+    };
+
+    const ContextToolImpl = struct {
+        const dummy_tool = Tool.init(dummy_tool_desc, run);
+
+        pub fn run(allocator_arg: std.mem.Allocator, state: *SessionState) ![]const u8 {
+            try state.setInjectedContext(&dummy_tool, "New context from tool execution");
+            return try allocator_arg.dupe(u8, "Tool completed successfully");
+        }
+    };
+
+    const tool = Tool.init(dummy_tool_desc, ContextToolImpl.run);
+    const tools = &[_]Tool{tool};
+
+    var session: Session = try .init(
+        allocator,
+        io,
+        prov,
+        .{
+            .model = .{ .id = "mock-model", .display_name = "Mock Model" },
+            .tools = tools,
+        },
+    );
+    defer session.deinit();
+
+    const tool_calls = [_]llm.types.ToolCall{
+        .{
+            .id = "call-id-999",
+            .name = "context_setter_tool",
+            .arguments = &.{},
+        },
+    };
+
+    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    const result2 = testing.MockProvider.stepResult(&.{.{ .text = "Final turn output" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = result2, .continuation = testing.MockProvider.stepContinuation() },
+    };
+    mock_provider.execute_step_results = &outcomes;
+
+    const turn = types.Turn{ .prompt = "Run tool and get context" };
+    var turn_res = try session.executeTurn(turn);
+    defer turn_res.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), mock_provider.last_input_steps.?.len);
+    const expected_ctx = "[TOOL_CONTEXT: context_setter_tool]\nNew context from tool execution\n[/TOOL_CONTEXT]\n\n";
+    try std.testing.expectEqualStrings(expected_ctx, mock_provider.last_input_steps.?[0].prompt);
+    try std.testing.expectEqualStrings("Tool completed successfully", mock_provider.last_input_steps.?[1].tool_result.result);
+}
