@@ -9,7 +9,7 @@ const Io = std.Io;
 const SessionStorage = @This();
 
 allocator: Allocator,
-sessions: std.StringHashMap(*SessionState),
+sessions: std.StringHashMapUnmanaged(*SessionState),
 session_counter: u64,
 
 pub const SessionState = struct {
@@ -18,7 +18,7 @@ pub const SessionState = struct {
 };
 
 pub fn init(allocator: Allocator) SessionStorage {
-    return .{ .allocator = allocator, .sessions = .init(allocator), .session_counter = 0 };
+    return .{ .allocator = allocator, .sessions = .{}, .session_counter = 0 };
 }
 
 pub fn deinit(self: *SessionStorage) void {
@@ -29,7 +29,7 @@ pub fn deinit(self: *SessionStorage) void {
         self.allocator.free(state.id);
         self.allocator.destroy(state);
     }
-    self.sessions.deinit();
+    self.sessions.deinit(self.allocator);
 }
 
 pub const SessionInitArgs = std.meta.ArgsTuple(@TypeOf(agent.Session.init));
@@ -44,7 +44,7 @@ pub fn createSession(self: *SessionStorage, args: SessionInitArgs) !*SessionStat
     errdefer session.deinit();
     session_state.* = .{ .id = session_id, .session = session };
 
-    try self.sessions.put(session_id, session_state);
+    try self.sessions.put(self.allocator, session_id, session_state);
 
     self.session_counter += 1;
     return session_state;
