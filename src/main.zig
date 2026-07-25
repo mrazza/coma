@@ -253,10 +253,9 @@ fn executeTypescript(allocator: std.mem.Allocator, io: std.Io, code: []const u8)
     return result.stdout;
 }
 
-fn getWeather(allocator: std.mem.Allocator, zip_code: i64, ctx: *anyopaque) ![]const u8 {
-    const str: *WeatherToolCtx = @ptrCast(@alignCast(ctx));
+fn getWeather(allocator: std.mem.Allocator, zip_code: i64, ctx: *WeatherToolCtx) ![]const u8 {
     const result_str = if (zip_code == 7302)
-        try allocator.dupe(u8, str.weather_str)
+        try allocator.dupe(u8, ctx.weather_str)
     else
         try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip_code});
 
@@ -325,7 +324,7 @@ pub fn main(init: std.process.Init) !void {
                     .description = "The 5-digit zip code to get the weather for.",
                 },
             },
-        }, getWeather, @ptrCast(&weather_ctx)),
+        }, getWeather, &weather_ctx),
     };
 
     const session_config: types.SessionConfig = .{
