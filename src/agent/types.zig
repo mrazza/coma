@@ -10,6 +10,8 @@ pub const SessionConfig = struct {
     model: llm.types.Model,
     /// A list of executable tools available for the Session to use.
     tools: []const Tool = &.{},
+    /// Optional system prompt for the Session.
+    system_prompt: ?[]const u8 = null,
 };
 
 /// Represents the input to start a single execution turn in a Session.

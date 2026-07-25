@@ -23,10 +23,7 @@ test "Provider.executeStep delegates to VTable" {
         .id = "test-model-id",
         .display_name = "Test Model",
     };
-    const session_config = llm.types.SessionConfig{
-        .model = model,
-        .tools = &.{},
-    };
+    const session_config = llm.types.SessionConfig{ .model = model };
     const input_steps = &[_]llm.types.Step{
         .{ .prompt = "hello" },
     };
@@ -84,7 +81,7 @@ test "Provider.listModels returns custom success and error" {
 test "Provider.executeStep returns custom success and error" {
     const allocator = std.testing.allocator;
     const model = llm.types.Model{ .id = "id", .display_name = "name" };
-    const session_config = llm.types.SessionConfig{ .model = model, .tools = &.{} };
+    const session_config = llm.types.SessionConfig{ .model = model };
 
     // Test custom success
     {
@@ -98,7 +95,6 @@ test "Provider.executeStep returns custom success and error" {
             .{ .result = step_result, .continuation = step_continuation },
         };
         mock_impl.execute_step_results = &outcomes;
-
 
         var prov = mock_impl.provider();
         var outcome = try prov.executeStep(allocator, session_config, &.{}, null);
@@ -131,10 +127,7 @@ test "Provider.executeStepStreaming delegates to VTable" {
         .id = "test-model-id",
         .display_name = "Test Model",
     };
-    const session_config = llm.types.SessionConfig{
-        .model = model,
-        .tools = &.{},
-    };
+    const session_config = llm.types.SessionConfig{ .model = model };
     const input_steps = &[_]llm.types.Step{
         .{ .prompt = "hello" },
     };
@@ -163,7 +156,7 @@ test "Provider.executeStepStreaming delegates to VTable" {
 test "Provider.executeStepStreaming returns custom success and error" {
     const allocator = std.testing.allocator;
     const model = llm.types.Model{ .id = "id", .display_name = "name" };
-    const session_config = llm.types.SessionConfig{ .model = model, .tools = &.{} };
+    const session_config = llm.types.SessionConfig{ .model = model };
 
     const CallbackState = struct {
         fn callback(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) void {
@@ -184,7 +177,6 @@ test "Provider.executeStepStreaming returns custom success and error" {
             .{ .result = step_result, .continuation = step_continuation },
         };
         mock_impl.execute_step_results = &outcomes;
-
 
         var prov = mock_impl.provider();
         var outcome = try prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null);

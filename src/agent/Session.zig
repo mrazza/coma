@@ -49,6 +49,7 @@ pub fn init(allocator: Allocator, io: Io, provider: Provider, config: types.Sess
         .session_config = .{
             .model = config.model,
             .tools = descriptors,
+            .system_prompt = config.system_prompt,
         },
         .prev_continuation = null,
         .session_state = .init(allocator),
@@ -693,5 +694,25 @@ test "Session.executeTurn - tool receives SessionState" {
     const state_obj = session.session_state.get(StateObj);
     try std.testing.expect(state_obj != null);
     try std.testing.expectEqual(@as(i64, 50), state_obj.?.value);
+}
+
+test "Session.init forwards system_prompt to session_config" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var mock_provider: testing.MockProvider = .{};
+    const prov = mock_provider.provider();
+
+    var session = try Session.init(
+        allocator,
+        io,
+        prov,
+        .{
+            .model = .{ .id = "mock-model", .display_name = "Mock Model" },
+            .system_prompt = "Custom system prompt",
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expectEqualStrings("Custom system prompt", session.session_config.system_prompt.?);
 }
 
