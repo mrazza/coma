@@ -1,3 +1,7 @@
+//! Collection of API types sent by clients in the Agent Client Protocol (ACP).
+//!
+//! Contains primarily requests and request parameters.
+
 const std = @import("std");
 const shared_api = @import("shared_api.zig");
 

@@ -1,3 +1,8 @@
+//! Agent Communication Protocol (ACP) server implementation.
+//!
+//! Handles JSON-RPC 2.0 requests from client applications over standard input/output
+//! or streaming I/O interfaces, dispatching initialization, session creation, and turn execution.
+
 const std = @import("std");
 const agent = @import("agent");
 const llm = @import("llm");
@@ -8,21 +13,26 @@ const converter = @import("converter.zig");
 const JsonRpcReader = @import("json_rpc/JsonRpcReader.zig");
 const JsonRpcWriter = @import("json_rpc/JsonRpcWriter.zig");
 const SessionStorage = @import("SessionStorage.zig");
+
+/// ACP server configuration.
 pub const Config = @import("Config.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
+/// Protocol errors encountered when decoding or validating ACP JSON-RPC requests.
 pub const AcpProtocolError = error{
     InvalidJsonRpcVersion,
     MissingId,
 } || std.json.Error;
 
+/// Internal context payload passed to session streaming callbacks.
 const ServerSessionContext = struct {
     session_state: *SessionStorage.SessionState,
     json_rpc_writer: *JsonRpcWriter,
 };
 
+/// ACP JSON-RPC Server instance managing reader/writer loops and session state.
 const Server = @This();
 
 allocator: Allocator,
@@ -31,6 +41,7 @@ input_reader: *Io.Reader,
 output_writer: *Io.Writer,
 sessions: SessionStorage,
 
+/// Initializes a new ACP `Server` with the provided allocator, I/O context, reader, and writer.
 pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_writer: *Io.Writer) Server {
     return .{
         .allocator = allocator,
@@ -41,16 +52,19 @@ pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_write
     };
 }
 
+/// Deinitializes the server and frees all tracked session resources.
 pub fn deinit(self: *Server) void {
     self.sessions.deinit();
 }
 
+/// Callback handler for streaming turn updates, converting agent streaming chunks into JSON-RPC notifications.
 fn handleTurnUpdate(ctx: ?*anyopaque, chunk: agent.types.StreamingChunk) void {
     const stream_ctx: *ServerSessionContext = @ptrCast(@alignCast(ctx));
     const notification = converter.streamingChunkToNotification(stream_ctx.session_state.id, chunk) orelse return;
     stream_ctx.json_rpc_writer.writeJsonObject(notification, .{ .use_headers = false }) catch {};
 }
 
+/// Formats and writes a JSON-RPC error response to the output writer.
 fn sendError(self: *Server, allocator: Allocator, id: shared_api.RequestId, code: agent_api.JsonRpcErrorCode, message: []const u8) !void {
     var writer = JsonRpcWriter.init(allocator, self.output_writer);
     defer writer.deinit();
@@ -63,6 +77,12 @@ fn sendError(self: *Server, allocator: Allocator, id: shared_api.RequestId, code
     }, .{});
 }
 
+/// Runs the main server request handling loop.
+///
+/// Continuously reads JSON-RPC requests from `input_reader`, validates them,
+/// and processes supported methods (`initialize`, `session/new`, `session/prompt`).
+///
+/// This method blocks. To cancel, request cancelation via `Io.cancel`.
 pub fn run(self: *Server, acp_config: Config) !void {
     var arena = std.heap.ArenaAllocator.init(self.allocator);
     defer arena.deinit();
@@ -172,6 +192,7 @@ pub fn run(self: *Server, acp_config: Config) !void {
     }
 }
 
+/// Validates basic ACP JSON-RPC request structure (protocol version and request ID presence).
 fn checkClientRequestValid(request: client_api.ClientRequest) AcpProtocolError!void {
     if (!std.mem.eql(u8, request.jsonrpc, "2.0")) return AcpProtocolError.InvalidJsonRpcVersion;
     if (request.id == .null) return AcpProtocolError.MissingId;
