@@ -1,3 +1,7 @@
+//! Collection of API types sent by servers in ACP implementations.
+//!
+//! Contains primarily response objects.
+
 const std = @import("std");
 const shared_api = @import("shared_api.zig");
 

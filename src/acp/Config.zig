@@ -1,3 +1,5 @@
+//! Configuration of an ACP server.
+
 const std = @import("std");
 const Provider = @import("llm").Provider;
 const SessionConfig = @import("agent").types.SessionConfig;

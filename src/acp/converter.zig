@@ -1,3 +1,5 @@
+//! Methods to convert between internal COMA data types and ACP API types.
+
 const std = @import("std");
 const agent = @import("agent");
 const llm = @import("llm");

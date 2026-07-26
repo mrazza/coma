@@ -6,21 +6,25 @@ const agent = @import("agent");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
+/// ACP session storage container.
 const SessionStorage = @This();
 
 allocator: Allocator,
 sessions: std.StringHashMapUnmanaged(*SessionState),
 session_counter: u64,
 
+/// Holds state for an active ACP session, including its unique ID and underlying `agent.Session`.
 pub const SessionState = struct {
     id: []const u8,
     session: agent.Session,
 };
 
+/// Initializes an empty `SessionStorage` instance.
 pub fn init(allocator: Allocator) SessionStorage {
     return .{ .allocator = allocator, .sessions = .{}, .session_counter = 0 };
 }
 
+/// Frees all stored session states, IDs, and internal map memory.
 pub fn deinit(self: *SessionStorage) void {
     var it = self.sessions.valueIterator();
     while (it.next()) |state_ptr| {
@@ -32,7 +36,10 @@ pub fn deinit(self: *SessionStorage) void {
     self.sessions.deinit(self.allocator);
 }
 
+/// Tuple type representing the argument types required by `agent.Session.init`.
 pub const SessionInitArgs = std.meta.ArgsTuple(@TypeOf(agent.Session.init));
+
+/// Creates and stores a new `SessionState` with an auto-generated session ID.
 pub fn createSession(self: *SessionStorage, args: SessionInitArgs) !*SessionState {
     const session_id = try std.fmt.allocPrint(self.allocator, "session_{}", .{self.session_counter});
     errdefer self.allocator.free(session_id);
@@ -50,6 +57,9 @@ pub fn createSession(self: *SessionStorage, args: SessionInitArgs) !*SessionStat
     return session_state;
 }
 
+/// Retrieves a pointer to a `SessionState` by its session ID.
+///
+/// Returns `error.SessionNotFound` if no session matches `id`.
 pub fn getSession(self: *const SessionStorage, id: []const u8) !*SessionState {
     return self.sessions.get(id) orelse return error.SessionNotFound;
 }

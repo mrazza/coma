@@ -1,8 +1,11 @@
+//! Agent tool for managing and injecting persistent TODO content into session context.
+
 const std = @import("std");
 const llm = @import("llm");
 const agent = @import("../root.zig");
 const SessionState = @import("../SessionState.zig");
 
+/// `write_todo` tool for creating, updating, or clearing the persistent TODO list.
 pub const Tool = agent.Tool.init(.{
     .name = "write_todo",
     .description =
@@ -28,6 +31,7 @@ pub const Tool = agent.Tool.init(.{
     },
 }, execute);
 
+/// Executes the tool call to set or clear the session's injected TODO context.
 fn execute(allocator: std.mem.Allocator, ctx: agent.ToolCallContext, content: []const u8) ![]const u8 {
     if (content.len == 0) {
         ctx.clearInjectedContext();
