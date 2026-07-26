@@ -10,6 +10,8 @@ const Io = std.Io;
 const Argument = llm.types.Argument;
 const ToolResult = llm.types.ToolResult;
 
+pub const BuiltIn = @import("tool/root.zig");
+
 /// Errors that can occur when executing or calling a tool.
 pub const CallError = error{
     /// A required argument was not provided.
