@@ -205,7 +205,7 @@ fn execute_step_streaming(
         } else if (self.execute_step_results_loop) {
             return results[call_idx % results.len];
         } else {
-            @panic("execute_step called more times than available outcomes");
+            @panic("execute_step_streaming called more times than available outcomes");
         }
     }
     return StepOutcome{

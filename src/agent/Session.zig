@@ -9,6 +9,7 @@ const llm = @import("llm");
 const Tool = @import("Tool.zig");
 const types = @import("types.zig");
 const SessionState = @import("SessionState.zig");
+const ToolCallContext = @import("ToolCallContext.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -110,7 +111,7 @@ fn streamingCallbackProxy(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) voi
 }
 
 fn executeToolCall(self: *Session, tool_call: llm.types.ToolCall) ToolError!llm.types.ToolResult {
-    const tool = for (self.tools) |t| {
+    const tool = for (self.tools) |*t| {
         if (std.mem.eql(u8, t.descriptor.name, tool_call.name)) {
             break t;
         }
@@ -634,7 +635,7 @@ test "Session.executeTurn - tool call error cleanup" {
     try std.testing.expectError(error.ArgumentTypeMismatch, session.executeTurn(turn));
 }
 
-test "Session.executeTurn - tool receives SessionState" {
+test "Session.executeTurn - tool receives ToolCallContext" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var mock_provider = testing.MockProvider{};
@@ -650,7 +651,7 @@ test "Session.executeTurn - tool receives SessionState" {
 
     const tool_desc = llm.types.Tool{
         .name = "state_tool",
-        .description = "A tool that interacts with SessionState",
+        .description = "A tool that interacts with ToolCallContext",
         .parameters = &.{
             .{
                 .name = "val",
@@ -662,8 +663,8 @@ test "Session.executeTurn - tool receives SessionState" {
     };
 
     const state_tool_impl = struct {
-        fn execute(alloc: Allocator, state: *SessionState, val: i64) Tool.CallError![]const u8 {
-            const obj = state.getOrInitState(StateObj, StateObj.initFn) catch return error.OutOfMemory;
+        fn execute(alloc: Allocator, call_ctx: ToolCallContext, val: i64) Tool.CallError![]const u8 {
+            const obj = call_ctx.getOrInitState(StateObj, StateObj.initFn) catch return error.OutOfMemory;
             obj.value += val;
             return try std.fmt.allocPrint(alloc, "State value is {d}", .{obj.value});
         }
@@ -788,10 +789,8 @@ test "Session.executeTurn prepends injected context added during tool execution"
     };
 
     const ContextToolImpl = struct {
-        const dummy_tool = Tool.init(dummy_tool_desc, run);
-
-        pub fn run(allocator_arg: std.mem.Allocator, state: *SessionState) ![]const u8 {
-            try state.setInjectedContext(&dummy_tool, "New context from tool execution");
+        pub fn run(allocator_arg: std.mem.Allocator, call_ctx: ToolCallContext) ![]const u8 {
+            try call_ctx.setInjectedContext("New context from tool execution");
             return try allocator_arg.dupe(u8, "Tool completed successfully");
         }
     };

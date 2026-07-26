@@ -1,6 +1,9 @@
 const std = @import("std");
 
 pub const Server = @import("Server.zig");
+pub const tools = struct {
+    pub const Todo = @import("tool/todo.zig").Tool;
+};
 
 // Keep types internal to the module, but ensure their tests are referenced and run.
 const client_api = @import("client_api.zig");
@@ -20,5 +23,6 @@ test {
     _ = JsonRpcReader;
     _ = JsonRpcWriter;
     _ = SessionStorage;
+    _ = @import("tool/todo.zig");
     std.testing.refAllDecls(@This());
 }
