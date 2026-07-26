@@ -163,6 +163,11 @@ pub const ContentType = enum {
     text,
 };
 
+/// Unique identifier for a tool call within a session.
+///
+/// See protocol docs: [Tool Calls](https://agentclientprotocol.com/protocol/tool-calls)
+pub const ToolCallId = []const u8;
+
 /// Content blocks represent displayable information in the Agent Client Protocol.
 ///
 /// They provide a structured way to handle various types of user-facing content—whether
