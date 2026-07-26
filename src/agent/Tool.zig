@@ -3,6 +3,7 @@
 const std = @import("std");
 const llm = @import("llm");
 const SessionState = @import("SessionState.zig");
+const ToolCallContext = @import("ToolCallContext.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -21,7 +22,7 @@ pub const CallError = error{
 } || std.mem.Allocator.Error;
 
 const Tool = @This();
-const ToolExecuteFn = *const fn (allocator: Allocator, io: Io, session_state: *SessionState, ctx: ?*anyopaque, args: []const Argument) CallError![]const u8;
+const ToolExecuteFn = *const fn (allocator: Allocator, io: Io, call_ctx: ToolCallContext, ctx: ?*anyopaque, args: []const Argument) CallError![]const u8;
 
 descriptor: llm.types.Tool,
 execute_fn: ToolExecuteFn,
@@ -39,7 +40,8 @@ ctx: ?*anyopaque,
 /// Returns a `ToolResult` containing the result of the tool call. The caller is responsible
 /// for freeing the `ToolResult` by calling `deinit()`.
 pub fn execute(self: *const Tool, allocator: Allocator, io: Io, session_state: *SessionState, id: []const u8, args: []const Argument) CallError!ToolResult {
-    const result = try self.execute_fn(allocator, io, session_state, self.ctx, args);
+    const call_ctx: ToolCallContext = .{ .tool = self, .session_state = session_state };
+    const result = try self.execute_fn(allocator, io, call_ctx, self.ctx, args);
     errdefer allocator.free(result);
     return ToolResult.initTakingResultOwnership(allocator, self.descriptor.name, id, result);
 }
@@ -56,8 +58,8 @@ pub fn execute(self: *const Tool, allocator: Allocator, io: Io, session_state: *
 /// are still in the same order as the parameters in the descriptor.
 ///
 /// Additionally, the function can optionally accept an Io struct which represents the IO to use
-/// during the tool call, and/or a SessionState pointer (`*SessionState` or `*const SessionState`)
-/// which represents the session-scoped state.
+/// during the tool call, and/or a ToolCallContext struct which provides access to a session-scoped
+/// state store and the ability to consiste
 ///
 /// The `execute_fn` should return the result of the tool call as a string and transfer
 /// ownership of the memory to the caller. The result will be passed to the LLM as the
@@ -82,8 +84,7 @@ pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) T
 /// are still in the same order as the parameters in the descriptor.
 ///
 /// Additionally, the function can optionally accept an Io struct which represents the IO to use
-/// during the tool call, and/or a SessionState pointer (`*SessionState` or `*const SessionState`)
-/// which represents the session-scoped state.
+/// during the tool call, and/or a ToolCallContext struct.
 ///
 /// The `execute_fn` should return the result of the tool call as a string and transfer
 /// ownership of the memory to the caller. The result will be passed to the LLM as the
@@ -207,15 +208,11 @@ inline fn findArgument(args: []const Argument, name: []const u8) ?*const Argumen
     return null;
 }
 
-fn isSessionStateType(comptime T: type) bool {
-    return T == *SessionState or T == *const SessionState;
-}
-
 /// Returns true if type `T` represents a valid context pointer type.
 /// A context pointer type is a single-item pointer (e.g. `*MyCtx`, `*const MyCtx`, `*anyopaque`)
 /// or an optional single-item pointer (e.g. `?*MyCtx`).
 fn isContextType(comptime T: type) bool {
-    if (isSessionStateType(T)) return false;
+    if (T == ToolCallContext) return false;
     return switch (@typeInfo(T)) {
         .pointer => |ptr_info| ptr_info.size == .one,
         .optional => |opt_info| switch (@typeInfo(opt_info.child)) {
@@ -303,7 +300,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         for (fn_info.params, 0..) |fn_param, i| {
             result_types[i] = fn_param.type.?;
 
-            if (fn_param.type.? == Allocator or fn_param.type.? == Io or isSessionStateType(fn_param.type.?)) {
+            if (fn_param.type.? == Allocator or fn_param.type.? == Io or fn_param.type.? == ToolCallContext) {
                 // Environment parameter
             } else if (isContextType(fn_param.type.?)) {
                 if (CtxType) |ProvidedCtxType| {
@@ -341,7 +338,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
     const TupleType = @Tuple(&types);
     return .{
         .ok = struct {
-            pub fn call(allocator: Allocator, io: Io, session_state: *SessionState, ctx: ?*anyopaque, input_args: []const Argument) CallError![]const u8 {
+            pub fn call(allocator: Allocator, io: Io, call_ctx: ToolCallContext, ctx: ?*anyopaque, input_args: []const Argument) CallError![]const u8 {
                 var args: TupleType = undefined;
                 comptime var descriptor_idx: usize = 0;
                 inline for (0..fn_info.params.len) |func_idx| {
@@ -350,8 +347,8 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                         args[func_idx] = allocator;
                     } else if (comptime T == Io) {
                         args[func_idx] = io;
-                    } else if (comptime isSessionStateType(T)) {
-                        args[func_idx] = session_state;
+                    } else if (comptime T == ToolCallContext) {
+                        args[func_idx] = call_ctx;
                     } else if (comptime (CtxType != null and isContextTypeCompatible(CtxType.?, T))) {
                         if (comptime @typeInfo(T) == .optional) {
                             args[func_idx] = if (ctx) |c| @ptrCast(@alignCast(c)) else null;
@@ -1122,15 +1119,15 @@ test expectsContext {
             return "";
         }
     };
-    const ImplWithSessionState = struct {
-        pub fn run(_: Allocator, _: *SessionState, _: i64) ![]const u8 {
+    const ImplWithCallContext = struct {
+        pub fn run(_: Allocator, _: ToolCallContext, _: i64) ![]const u8 {
             return "";
         }
     };
     try std.testing.expect(!expectsContext(ImplNoCtx.run));
     try std.testing.expect(expectsContext(ImplWithCtx.run));
     try std.testing.expect(expectsContext(ImplWithTypedCtx.run));
-    try std.testing.expect(!expectsContext(ImplWithSessionState.run));
+    try std.testing.expect(!expectsContext(ImplWithCallContext.run));
 }
 
 test "execute - has context" {
@@ -1282,7 +1279,7 @@ test isContextTypeCompatible {
     try std.testing.expect(!isContextTypeCompatible(*const Foo, *Foo));
 }
 
-test "execute - SessionState parameter variants" {
+test "execute with ToolCallContext" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var session_state = SessionState.init(allocator);
@@ -1309,13 +1306,13 @@ test "execute - SessionState parameter variants" {
     };
 
     const tool_impl = struct {
-        pub fn increment(alloc: Allocator, state: *SessionState, inc: i64) CallError![]const u8 {
-            const counter = state.getOrInitState(CounterState, CounterState.initFn) catch return error.OutOfMemory;
+        pub fn increment(alloc: Allocator, call_ctx: ToolCallContext, inc: i64) CallError![]const u8 {
+            const counter = call_ctx.getOrInitState(CounterState, CounterState.initFn) catch return error.OutOfMemory;
             counter.count += inc;
             return try std.fmt.allocPrint(alloc, "Count: {d}", .{counter.count});
         }
-        pub fn read_const(alloc: Allocator, state: *const SessionState, inc: i64) CallError![]const u8 {
-            const count = if (state.getState(CounterState)) |c| c.count else 0;
+        pub fn read_const(alloc: Allocator, call_ctx: ToolCallContext, inc: i64) CallError![]const u8 {
+            const count = if (call_ctx.getState(CounterState)) |c| c.count else 0;
             return try std.fmt.allocPrint(alloc, "ConstCount: {d}", .{count + inc});
         }
     };
