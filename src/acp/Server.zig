@@ -30,6 +30,7 @@ pub const AcpProtocolError = error{
 const ServerSessionContext = struct {
     session_state: *SessionStorage.SessionState,
     json_rpc_writer: *JsonRpcWriter,
+    allocator: Allocator,
 };
 
 /// ACP JSON-RPC Server instance managing reader/writer loops and session state.
@@ -60,7 +61,7 @@ pub fn deinit(self: *Server) void {
 /// Callback handler for streaming turn updates, converting agent streaming chunks into JSON-RPC notifications.
 fn handleTurnUpdate(ctx: ?*anyopaque, chunk: agent.types.StreamingChunk) void {
     const stream_ctx: *ServerSessionContext = @ptrCast(@alignCast(ctx));
-    const notification = converter.streamingChunkToNotification(stream_ctx.session_state.id, chunk) orelse return;
+    const notification = converter.streamingChunkToNotification(stream_ctx.allocator, stream_ctx.session_state.id, chunk) catch return orelse return;
     stream_ctx.json_rpc_writer.writeJsonObject(notification, .{ .use_headers = false }) catch {};
 }
 
@@ -167,6 +168,7 @@ pub fn run(self: *Server, acp_config: Config) !void {
                 var ctx: ServerSessionContext = .{
                     .session_state = session,
                     .json_rpc_writer = &json_rpc_writer,
+                    .allocator = arena_allocator,
                 };
 
                 _ = session.session.executeTurnStreaming(.{ .prompt = client_request.params.session_prompt.prompt[0].text }, handleTurnUpdate, &ctx) catch {

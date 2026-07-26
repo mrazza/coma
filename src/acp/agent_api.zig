@@ -258,6 +258,8 @@ pub const SessionUpdate = union(enum) {
     agent_message_chunk: ContentChunk,
     /// Agent thinking chunk.
     agent_thought_chunk: ContentChunk,
+    /// Tool call update chunk.
+    tool_call_update: ToolCallUpdate,
 
     pub fn jsonStringify(self: SessionUpdate, jw: anytype) !void {
         switch (self) {
@@ -277,6 +279,39 @@ pub const ContentChunk = struct {
     content: shared_api.ContentBlock,
 
     // TODO(razza): Do we need messageId?
+};
+
+/// Execution status of a tool call.
+///
+/// Tool calls progress through different statuses during their lifecycle.
+///
+/// See protocol docs: [Status](https://agentclientprotocol.com/protocol/tool-calls#status)
+pub const ToolCallStatus = enum {
+    pending,
+    in_progress,
+    completed,
+    failed,
+};
+
+/// An update to an existing tool call.
+///
+/// Used to report progress and results as tools execute. All fields except
+/// the tool call ID are optional - only changed fields need to be included.
+///
+/// See protocol docs: [Updating](https://agentclientprotocol.com/protocol/tool-calls#updating)
+pub const ToolCallUpdate = struct {
+    /// The ID of the tool call being updated.
+    toolCallId: shared_api.ToolCallId,
+    /// Human-readable title describing what the tool is doing.
+    title: ?[]const u8,
+    /// Programmatic name of the tool being invoked.
+    name: ?[]const u8,
+    /// Execution status of the tool call.
+    status: ?ToolCallStatus,
+    /// Update the raw input.
+    rawInput: ?[]const u8,
+    /// Update the raw output.
+    rawOutput: ?[]const u8,
 };
 
 /// Serializes a value into a newly allocated JSON string.
@@ -564,4 +599,46 @@ test "json stringify AgentNotification session_update thought chunk" {
 
     const content = update.get("content").?.object;
     try std.testing.expectEqualStrings("Thinking...", content.get("text").?.string);
+}
+
+test "json stringify AgentNotification session_update tool_call_update" {
+    const allocator = std.testing.allocator;
+
+    const notification: AgentNotification = .{
+        .method = .session_update,
+        .params = .{
+            .session_update = .{
+                .sessionId = "sess-123",
+                .update = .{
+                    .tool_call_update = .{
+                        .toolCallId = "tc-456",
+                        .title = "Reading file",
+                        .name = "read_file",
+                        .status = .in_progress,
+                        .rawInput = "{\"path\":\"/foo/bar\"}",
+                        .rawOutput = null,
+                    },
+                },
+            },
+        },
+    };
+
+    const json_str = try stringify(allocator, notification);
+    defer allocator.free(json_str);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("session/update", parsed.value.object.get("method").?.string);
+
+    const params = parsed.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("sess-123", params.get("sessionId").?.string);
+
+    const update = params.get("update").?.object;
+    try std.testing.expectEqualStrings("tool_call_update", update.get("sessionUpdate").?.string);
+    try std.testing.expectEqualStrings("tc-456", update.get("toolCallId").?.string);
+    try std.testing.expectEqualStrings("Reading file", update.get("title").?.string);
+    try std.testing.expectEqualStrings("read_file", update.get("name").?.string);
+    try std.testing.expectEqualStrings("in_progress", update.get("status").?.string);
+    try std.testing.expectEqualStrings("{\"path\":\"/foo/bar\"}", update.get("rawInput").?.string);
 }
