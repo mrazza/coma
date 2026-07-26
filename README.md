@@ -13,14 +13,17 @@ Sure, writing LLM agent loops is a solved problem and it's completely unnecessar
 ## Core Features
 
 - **Type-safe Comptime Tool Registration**: Register standard Zig functions as agent tools. The compiler checks that your function parameters match the tool's descriptor structure using Zig's compile-time reflection.
-- **Incremental Streaming & Response Accumulator**: Built-in support for streaming model responses chunk-by-chunk.
-- **Asynchronous & Concurrent Tool Execution**: Built on top of Zig's native non-blocking I/O event loop (`std.Io`). Instead of running tool calls sequentially, the Agent uses `Io.Select` to kick off independent tool calls concurrently and await their results asynchronously.
-- **Async Zero-Dependency HTTP/Client Stack**: Communication with LLM backends asynchronously using Zig's native `std.http.Client`.
-- **Explicit Memory Control**: Everything uses Zig's explicit allocator pattern. The running application consumes ~5MB of memory.
+- **ACP Server Integration**: Built-in JSON-RPC stdio server supporting the Agent Connection Protocol (ACP) for external client/IDE integration (`--acp`).
+- **Context-Aware Tools & State Management**: Support for custom user-data contexts (`Tool.initWithContext`), session state tracking, and dynamic context injections across turns.
+- **Built-in Agent Tools**: Standardized built-in tools (such as `agent.Tool.BuiltIn.Todo` for planning and tracking multi-step execution).
+- **Incremental Streaming & Response Accumulator**: Built-in support for streaming model responses chunk-by-chunk with ANSI terminal markdown formatting.
+- **Asynchronous & Concurrent Tool Execution**: Built on top of Zig's native non-blocking I/O event loop (`std.Io`). Tools run concurrently via `Io.Select`.
+- **Async Zero-Dependency HTTP Client**: Direct communication with LLM backends asynchronously using Zig's native `std.http.Client`.
+- **Explicit Memory Control**: Everything uses Zig's explicit allocator pattern with minimal memory footprint (~5MB overhead).
 
 ## Tool Registration Example
 
-COMA uses Zig's `comptime` capabilities to make tool registration type-safe and boilerplate-free.
+COMA uses Zig's `comptime` capabilities to make tool registration type-safe and boilerplate-free:
 
 ```zig
 // Define a standard Zig function
@@ -43,6 +46,8 @@ const weather_tool = Tool.init(.{
 }, getWeather);
 ```
 
+You can also attach custom context to tools using `Tool.initWithContext` or include built-in tools like `agent.Tool.BuiltIn.Todo`.
+
 ## Library Usage
 
 To use COMA in your own project, initialize a provider and the agent loop:
@@ -54,7 +59,8 @@ var client = gemini_client.provider();
 
 const session_config: types.SessionConfig = .{
     .model = selected_model,
-    .tools = &[_]Tool{ weather_tool },
+    .system_prompt = "You are a helpful assistant.",
+    .tools = &[_]Tool{ weather_tool, agent.Tool.BuiltIn.Todo },
 };
 
 var session = try Session.init(allocator, io, client, session_config);
@@ -65,11 +71,13 @@ const result = try session.executeTurn(.{ .prompt = "What is the weather in 9021
 
 ## Project Structure
 
-- `src/agent/`: Core agent logic, tool execution, and type definitions.
+- `src/acp/`: Implementation of the Agent Connection Protocol (ACP) JSON-RPC server and session storage.
+- `src/agent/`: Core agent logic, session state management, tool execution, and built-in tools.
 - `src/llm/`: Generic LLM provider interfaces and message schemas.
 - `src/provider/`: Concrete implementations for LLM services (e.g., Google Gemini).
-- `src/testing/`: Mocks and utilities for testing the agent without network calls.
-- `src/main.zig`: The CLI entry point and interactive chat interface.
+- `src/testing/`: Mocks and utilities for testing without network calls.
+- `src/MarkdownRendering.zig`: Dedicated module for ANSI-formatted streaming markdown output in the terminal.
+- `src/main.zig`: CLI entry point, supporting interactive chat and ACP server mode.
 
 ## Setup
 
@@ -95,19 +103,32 @@ To build and start the CLI agent interface:
 zig build run
 ```
 
-### 3. Run the Test Suite
-To compile and execute all mock provider and agent tests:
+### 3. Run as an ACP Server
+To run COMA as an ACP server over stdio for external client integrations:
+
+```bash
+zig build run -- --acp
+```
+
+### 4. Run the Test Suite & Coverage
+To compile and execute all tests:
 
 ```bash
 zig build test
 ```
 
+To generate a test coverage report (requires `kcov`):
+
+```bash
+zig build coverage
+```
+
 ## The Roadmap / Future Plans
 
-- **ACP Server Integration**: Build an ACP (Agent Connection Protocol) server directly into the agent. This will allow the external frontends, such as the [goose-mm-bridge](https://github.com/mrazza/goose-mm-bridge), to control the agent.
-- **Agents.md / SKILLS**: Define agent behaviors in Markdown files and load them into context automatically.
-- **More Providers**: Support for Anthropic, OpenAI, Ollama, etc.
-- **Vector DB Client**: Persistent long-term memory.
+- [x] **ACP Server Integration**: Build an ACP server into the agent for external client control.
+- [ ] **Agents.md / SKILLS**: Define agent behaviors in Markdown files and load them into context automatically.
+- [ ] **More Providers**: Support for Anthropic, OpenAI, Ollama, etc.
+- [ ] **Vector DB Client**: Persistent long-term memory.
 
 ## License
 
