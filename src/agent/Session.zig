@@ -127,6 +127,12 @@ fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*Str
     const allocator = self.allocator;
     const io = self.io;
     defer next_steps.deinit(allocator);
+
+    const maybe_context = try self.session_state.getInjectedContextString(allocator);
+    defer if (maybe_context) |context_str| allocator.free(context_str);
+    if (maybe_context) |context_str| {
+        try next_steps.append(allocator, .{ .prompt = context_str });
+    }
     try next_steps.append(allocator, .{ .prompt = turn.prompt });
 
     var intermediate_results: std.ArrayList(types.IntermediateStepResult) = .empty;
@@ -142,11 +148,6 @@ fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*Str
     }
 
     while (true) {
-        const maybe_context = try self.session_state.getInjectedContextString(allocator);
-        defer if (maybe_context) |context_str| allocator.free(context_str);
-        if (maybe_context) |context_str| {
-            try next_steps.insert(allocator, 0, .{ .prompt = context_str });
-        }
 
         const step_outcome = if (callback_context) |cb|
             try self.provider.executeStepStreaming(
@@ -819,9 +820,11 @@ test "Session.executeTurn prepends injected context added during tool execution"
 
     const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
     const result2 = testing.MockProvider.stepResult(&.{.{ .text = "Final turn output" }}, &.{}, &.{});
+    const result3 = testing.MockProvider.stepResult(&.{.{ .text = "Second turn output" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
         .{ .result = result1, .continuation = testing.MockProvider.stepContinuation() },
         .{ .result = result2, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = result3, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -829,8 +832,17 @@ test "Session.executeTurn prepends injected context added during tool execution"
     var turn_res = try session.executeTurn(turn);
     defer turn_res.deinit();
 
+    // On step 2 of turn 1 (tool response), tool_result is sent directly without prepending prompt
+    try std.testing.expectEqual(@as(usize, 1), mock_provider.last_input_steps.?.len);
+    try std.testing.expectEqualStrings("Tool completed successfully", mock_provider.last_input_steps.?[0].tool_result.result);
+
+    // On turn 2, injected context set by tool execution is prepended ahead of turn prompt
+    const turn2 = types.Turn{ .prompt = "Follow up prompt" };
+    var turn2_res = try session.executeTurn(turn2);
+    defer turn2_res.deinit();
+
     try std.testing.expectEqual(@as(usize, 2), mock_provider.last_input_steps.?.len);
     const expected_ctx = "[TOOL_CONTEXT: context_setter_tool]\nNew context from tool execution\n[/TOOL_CONTEXT]\n\n";
     try std.testing.expectEqualStrings(expected_ctx, mock_provider.last_input_steps.?[0].prompt);
-    try std.testing.expectEqualStrings("Tool completed successfully", mock_provider.last_input_steps.?[1].tool_result.result);
+    try std.testing.expectEqualStrings("Follow up prompt", mock_provider.last_input_steps.?[1].prompt);
 }

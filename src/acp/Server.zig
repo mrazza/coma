@@ -156,6 +156,12 @@ pub fn run(self: *Server, acp_config: Config) !void {
                 try json_rpc_writer.writeJsonObject(reply, .{});
             },
             .session_prompt => {
+                const prompt_blocks = client_request.params.session_prompt.prompt;
+                if (prompt_blocks.len == 0) {
+                    try self.sendError(arena_allocator, client_request.id, .invalid_params, "Prompt array cannot be empty");
+                    continue;
+                }
+
                 const session = self.sessions.getSession(client_request.params.session_prompt.sessionId) catch |err| {
                     const code: agent_api.JsonRpcErrorCode = if (err == error.SessionNotFound) .session_not_found else .internal_error;
                     const msg = if (err == error.SessionNotFound) "Session not found" else "Session retrieval error";
@@ -165,13 +171,21 @@ pub fn run(self: *Server, acp_config: Config) !void {
                 var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
                 defer json_rpc_writer.deinit();
 
+                var combined_prompt: std.ArrayList(u8) = .empty;
+                defer combined_prompt.deinit(arena_allocator);
+                for (prompt_blocks) |block| {
+                    switch (block) {
+                        .text => |txt| try combined_prompt.appendSlice(arena_allocator, txt),
+                    }
+                }
+
                 var ctx: ServerSessionContext = .{
                     .session_state = session,
                     .json_rpc_writer = &json_rpc_writer,
                     .allocator = arena_allocator,
                 };
 
-                _ = session.session.executeTurnStreaming(.{ .prompt = client_request.params.session_prompt.prompt[0].text }, handleTurnUpdate, &ctx) catch {
+                _ = session.session.executeTurnStreaming(.{ .prompt = combined_prompt.items }, handleTurnUpdate, &ctx) catch {
                     try self.sendError(arena_allocator, client_request.id, .internal_error, "Failed to execute turn");
                     continue;
                 };
@@ -240,3 +254,62 @@ test "Server error handling - invalid session ID" {
     try std.testing.expect(std.mem.indexOf(u8, output, "-32001") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Session not found") != null);
 }
+
+test "Server error handling - empty prompt array" {
+    const allocator = std.testing.allocator;
+
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}
+    ;
+    var reader_buf = std.Io.Reader.fixed(input);
+    var buffer = std.Io.Writer.Allocating.init(allocator);
+    defer buffer.deinit();
+
+    var server = Server.init(allocator, std.testing.io, &reader_buf, &buffer.writer);
+    defer server.deinit();
+
+    try server.run(.{ .provider = undefined, .default_session_config = undefined });
+
+    const output = buffer.written();
+    try std.testing.expect(std.mem.indexOf(u8, output, "-32602") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Prompt array cannot be empty") != null);
+}
+
+test "Server prompt handling - multiple items in prompt array" {
+    const testing = @import("testing");
+    const allocator = std.testing.allocator;
+
+    var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
+    const prov = mock_provider.provider();
+
+    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Response text" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
+    };
+    mock_provider.execute_step_results = &outcomes;
+
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"session_0","prompt":[{"type":"text","text":"Hello "},{"type":"text","text":"world!"}]}}
+    ;
+    var reader_buf = std.Io.Reader.fixed(input);
+    var buffer = std.Io.Writer.Allocating.init(allocator);
+    defer buffer.deinit();
+
+    var server = Server.init(allocator, std.testing.io, &reader_buf, &buffer.writer);
+    defer server.deinit();
+
+    try server.run(.{
+        .provider = prov,
+        .default_session_config = .{
+            .model = .{ .id = "mock-model", .display_name = "Mock Model" },
+        },
+    });
+
+    const output = buffer.written();
+    try std.testing.expect(std.mem.indexOf(u8, output, "stopReason") != null);
+    try std.testing.expectEqual(@as(usize, 1), mock_provider.last_input_steps.?.len);
+    try std.testing.expectEqualStrings("Hello world!", mock_provider.last_input_steps.?[0].prompt);
+}
+
