@@ -18,9 +18,13 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
         return try allocator.dupe(u8, env_val);
     }
 
+    if (environ_map.get("GOOGLE_API_KEY")) |env_val| {
+        return try allocator.dupe(u8, env_val);
+    }
+
     var file = std.Io.Dir.openFile(.cwd(), io, ".env", .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            std.debug.print("Error: GEMINI_API_KEY environment variable is not set, and no .env file was found.\n", .{});
+            std.debug.print("Error: GEMINI_API_KEY and GOOGLE_API_KEY environment variable is not set, and no .env file was found.\n", .{});
             return error.ApiKeyMissing;
         },
         else => |e| return e,
@@ -40,9 +44,15 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
             const cleaned = std.mem.trim(u8, val, "\"'");
             return try allocator.dupe(u8, cleaned);
         }
+
+        if (std.mem.eql(u8, key, "GOOGLE_API_KEY")) {
+            const val = std.mem.trim(u8, it.rest(), " \t");
+            const cleaned = std.mem.trim(u8, val, "\"'");
+            return try allocator.dupe(u8, cleaned);
+        }
     }
 
-    std.debug.print("Error: GEMINI_API_KEY environment variable is not set, and was not found in the .env file.\n", .{});
+    std.debug.print("Error: GEMINI_API_KEY and GOOGLE_API_KEY environment variable is not set, and was not found in the .env file.\n", .{});
     return error.ApiKeyMissing;
 }
 
