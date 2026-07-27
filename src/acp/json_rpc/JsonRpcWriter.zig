@@ -1,6 +1,6 @@
 //! Takes a `*std.Io.Writer` and supports writing objects to that stream via the JSON-RPC format.
 //!
-//! This is NOT threadsafe.
+//! Writing to the provided `Io.Writer` is mediated by a mutex and is threadsafe.
 
 const std = @import("std");
 
@@ -9,9 +9,9 @@ const Io = std.Io;
 
 const JsonRpcWriter = @This();
 
-allocator: Allocator,
 writer: *Io.Writer,
 write_buffer: std.Io.Writer.Allocating,
+write_mutex: Io.Mutex,
 
 /// Options for writing JSON-RPC messages.
 pub const Options = struct {
@@ -26,19 +26,49 @@ pub const Options = struct {
 /// The returned `JsonRpcWriter` must be deinitialized when no longer needed by calling `deinit()`.
 pub fn init(allocator: Allocator, writer: *Io.Writer) JsonRpcWriter {
     return .{
-        .allocator = allocator,
         .writer = writer,
         .write_buffer = .init(allocator),
+        .write_mutex = .init,
     };
 }
 
 /// Frees the resources associated with the `JsonRpcWriter`.
+///
+/// It is not safe to call this function if the `JsonRpcWriter` is still in use by another thread.
 pub fn deinit(self: *JsonRpcWriter) void {
     self.write_buffer.deinit();
 }
 
 /// Writes a JSON-RPC raw message (payload) directly to the stream.
-pub fn writeRawMessage(self: *JsonRpcWriter, payload: []const u8, options: Options) !void {
+///
+/// Acquires an exclusive lock on the writer and writes the payload to the stream.
+pub fn writeRawMessage(self: *JsonRpcWriter, io: Io, payload: []const u8, options: Options) !void {
+    try self.write_mutex.lock(io);
+    defer self.write_mutex.unlock(io);
+
+    try self.writeInternal(payload, options);
+}
+
+/// Serializes the given value to JSON and writes it to the stream.
+///
+/// Acquires an exclusive lock on the writer and writes the JSON-serialized value to the stream.
+pub fn writeJsonObject(self: *JsonRpcWriter, io: Io, value: anytype, options: Options) !void {
+    try self.write_mutex.lock(io);
+    defer self.write_mutex.unlock(io);
+
+    self.write_buffer.clearRetainingCapacity();
+    var stringifier = std.json.Stringify{
+        .writer = &self.write_buffer.writer,
+        .options = .{},
+    };
+    try stringifier.write(value);
+
+    try self.writeInternal(self.write_buffer.written(), options);
+}
+
+/// Internal method that handles writing the payload to the stream. It assumes the caller has
+/// already acquired the `write_mutex`.
+fn writeInternal(self: *JsonRpcWriter, payload: []const u8, options: Options) !void {
     if (options.use_headers) {
         var header_buf: [64]u8 = undefined;
         const header = try std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{payload.len});
@@ -49,18 +79,6 @@ pub fn writeRawMessage(self: *JsonRpcWriter, payload: []const u8, options: Optio
         _ = try self.writer.write("\n");
     }
     _ = try self.writer.flush();
-}
-
-/// Serializes the given value to JSON and writes it to the stream.
-pub fn writeJsonObject(self: *JsonRpcWriter, value: anytype, options: Options) !void {
-    self.write_buffer.clearRetainingCapacity();
-    var stringifier = std.json.Stringify{
-        .writer = &self.write_buffer.writer,
-        .options = .{},
-    };
-    try stringifier.write(value);
-
-    try self.writeRawMessage(self.write_buffer.written(), options);
 }
 
 test writeJsonObject {
@@ -86,7 +104,7 @@ test writeJsonObject {
             .id = 1,
         };
 
-        try writer.writeJsonObject(msg, .{ .use_headers = true });
+        try writer.writeJsonObject(std.testing.io, msg, .{ .use_headers = true });
 
         const expected = "Content-Length: 46\r\n\r\n{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"id\":1}";
         try std.testing.expectEqualStrings(expected, buffer.written());
@@ -106,7 +124,7 @@ test writeJsonObject {
             .id = 2,
         };
 
-        try writer.writeJsonObject(msg, .{ .use_headers = false });
+        try writer.writeJsonObject(std.testing.io, msg, .{ .use_headers = false });
 
         const expected = "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"id\":2}\n";
         try std.testing.expectEqualStrings(expected, buffer.written());
@@ -125,7 +143,7 @@ test writeRawMessage {
         defer writer.deinit();
 
         const payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}";
-        try writer.writeRawMessage(payload, .{ .use_headers = true });
+        try writer.writeRawMessage(std.testing.io, payload, .{ .use_headers = true });
 
         const expected = "Content-Length: 46\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}";
         try std.testing.expectEqualStrings(expected, buffer.written());
@@ -140,7 +158,7 @@ test writeRawMessage {
         defer writer.deinit();
 
         const payload = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\"}";
-        try writer.writeRawMessage(payload, .{ .use_headers = false });
+        try writer.writeRawMessage(std.testing.io, payload, .{ .use_headers = false });
 
         const expected = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\"}\n";
         try std.testing.expectEqualStrings(expected, buffer.written());
@@ -167,14 +185,14 @@ test "writeJsonObject - consecutive calls with headers" {
         .method = "initialize",
         .id = 1,
     };
-    try writer.writeJsonObject(msg1, .{ .use_headers = true });
+    try writer.writeJsonObject(std.testing.io, msg1, .{ .use_headers = true });
 
     const msg2 = TestObject{
         .jsonrpc = "2.0",
         .method = "initialized",
         .id = 2,
     };
-    try writer.writeJsonObject(msg2, .{ .use_headers = true });
+    try writer.writeJsonObject(std.testing.io, msg2, .{ .use_headers = true });
 
     const expected =
         "Content-Length: 46\r\n\r\n{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"id\":1}" ++

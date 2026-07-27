@@ -24,6 +24,7 @@ const Allocator = std.mem.Allocator;
 pub const AcpProtocolError = error{
     InvalidJsonRpcVersion,
     MissingId,
+    MethodParamsMismatch,
 } || std.json.Error;
 
 /// Internal context payload passed to session streaming callbacks.
@@ -31,6 +32,7 @@ const ServerSessionContext = struct {
     session_state: *SessionStorage.SessionState,
     json_rpc_writer: *JsonRpcWriter,
     allocator: Allocator,
+    io: Io,
 };
 
 /// ACP JSON-RPC Server instance managing reader/writer loops and session state.
@@ -58,18 +60,81 @@ pub fn deinit(self: *Server) void {
     self.sessions.deinit();
 }
 
+/// Runs the main server request handling loop.
+///
+/// Continuously reads JSON-RPC requests from `input_reader`, validates them,
+/// and processes supported methods (`initialize`, `session/new`, `session/prompt`).
+///
+/// This method blocks. As a result, it may make sense to launch this concurrently.
+/// It can be terminated by requesting cancelation via `Io.cancel`.
+pub fn run(self: *Server, acp_config: Config) !void {
+    var json_rpc_reader = JsonRpcReader.init(self.allocator, self.input_reader);
+    defer json_rpc_reader.deinit();
+    var json_rpc_writer = JsonRpcWriter.init(self.allocator, self.output_writer);
+    defer json_rpc_writer.deinit();
+
+    var task_group: Io.Group = .init;
+    defer task_group.cancel(self.io);
+
+    while (true) {
+        try self.io.checkCancel();
+
+        const parse_result = json_rpc_reader.readJsonObject(client_api.ClientRequest) catch |err| {
+            if (err == error.EndOfStream) return;
+            try self.sendError(&json_rpc_writer, .null, .parse_error, "Parse error");
+            continue;
+        };
+
+        const client_request = parse_result.value;
+        checkClientRequestValid(client_request) catch |err| {
+            parse_result.deinit();
+            const msg = switch (err) {
+                AcpProtocolError.InvalidJsonRpcVersion => "Invalid JSON-RPC version (must be 2.0)",
+                AcpProtocolError.MissingId => "Missing request ID",
+                AcpProtocolError.MethodParamsMismatch => "Request method does not match request parameters",
+                else => "Invalid request",
+            };
+            try self.sendError(&json_rpc_writer, client_request.id, .invalid_request, msg);
+            continue;
+        };
+
+        switch (client_request.params) {
+            .initialize => |params| {
+                defer parse_result.deinit();
+                try self.handleInitialize(&json_rpc_writer, client_request.id, params);
+            },
+            .session_new => |params| {
+                defer parse_result.deinit();
+                try self.handleSessionNew(&json_rpc_writer, client_request.id, params, acp_config);
+            },
+            .session_prompt => {
+                task_group.async(self.io, handleSessionPromptFireAndForget, .{ self, &json_rpc_writer, parse_result });
+            },
+            .unknown => {
+                defer parse_result.deinit();
+                try self.sendError(&json_rpc_writer, client_request.id, .method_not_found, "Method not found");
+            },
+        }
+    }
+}
+
+/// Validates basic ACP JSON-RPC request structure (protocol version, request ID presence, and method/params alignment).
+fn checkClientRequestValid(request: client_api.ClientRequest) AcpProtocolError!void {
+    if (!std.mem.eql(u8, request.jsonrpc, "2.0")) return AcpProtocolError.InvalidJsonRpcVersion;
+    if (request.id == .null) return AcpProtocolError.MissingId;
+    if (std.meta.activeTag(request.params) != request.method) return AcpProtocolError.MethodParamsMismatch;
+}
+
 /// Callback handler for streaming turn updates, converting agent streaming chunks into JSON-RPC notifications.
 fn handleTurnUpdate(ctx: ?*anyopaque, chunk: agent.types.StreamingChunk) void {
     const stream_ctx: *ServerSessionContext = @ptrCast(@alignCast(ctx));
     const notification = converter.streamingChunkToNotification(stream_ctx.allocator, stream_ctx.session_state.id, chunk) catch return orelse return;
-    stream_ctx.json_rpc_writer.writeJsonObject(notification, .{ .use_headers = false }) catch {};
+    stream_ctx.json_rpc_writer.writeJsonObject(stream_ctx.io, notification, .{ .use_headers = false }) catch {};
 }
 
-/// Formats and writes a JSON-RPC error response to the output writer.
-fn sendError(self: *Server, allocator: Allocator, id: shared_api.RequestId, code: agent_api.JsonRpcErrorCode, message: []const u8) !void {
-    var writer = JsonRpcWriter.init(allocator, self.output_writer);
-    defer writer.deinit();
-    try writer.writeJsonObject(agent_api.AgentErrorResponse{
+/// Formats and writes a JSON-RPC error response using the provided JSON-RPC writer.
+fn sendError(self: *Server, writer: *JsonRpcWriter, id: shared_api.RequestId, code: agent_api.JsonRpcErrorCode, message: []const u8) !void {
+    try writer.writeJsonObject(self.io, agent_api.AgentErrorResponse{
         .id = id,
         .@"error" = .{
             .code = code,
@@ -78,140 +143,107 @@ fn sendError(self: *Server, allocator: Allocator, id: shared_api.RequestId, code
     }, .{});
 }
 
-/// Runs the main server request handling loop.
-///
-/// Continuously reads JSON-RPC requests from `input_reader`, validates them,
-/// and processes supported methods (`initialize`, `session/new`, `session/prompt`).
-///
-/// This method blocks. To cancel, request cancelation via `Io.cancel`.
-pub fn run(self: *Server, acp_config: Config) !void {
-    var arena = std.heap.ArenaAllocator.init(self.allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
-
-    while (true) {
-        try self.io.checkCancel();
-        _ = arena.reset(.retain_capacity);
-
-        var json_rpc_reader = JsonRpcReader.init(arena_allocator, self.input_reader);
-        defer json_rpc_reader.deinit();
-
-        const parse_result = json_rpc_reader.readJsonObject(client_api.ClientRequest) catch |err| {
-            if (err == error.EndOfStream) return;
-            try self.sendError(arena_allocator, .null, .parse_error, "Parse error");
-            continue;
-        };
-
-        const client_request = parse_result.value;
-        checkClientRequestValid(client_request) catch |err| {
-            const msg = switch (err) {
-                AcpProtocolError.InvalidJsonRpcVersion => "Invalid JSON-RPC version (must be 2.0)",
-                AcpProtocolError.MissingId => "Missing request ID",
-                else => "Invalid request",
-            };
-            try self.sendError(arena_allocator, client_request.id, .invalid_request, msg);
-            continue;
-        };
-
-        switch (client_request.method) {
-            .initialize => {
-                const reply: agent_api.AgentResponse = .{
-                    .id = client_request.id,
-                    .result = .{
-                        .initialize = .{
-                            .protocolVersion = 1,
-                            .agentCapabilities = null,
-                            .agentInfo = null,
-                            .authMethods = {},
-                        },
-                    },
-                };
-                var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
-                defer json_rpc_writer.deinit();
-
-                try json_rpc_writer.writeJsonObject(reply, .{});
+/// Handles `initialize` request negotiation and writes JSON-RPC `initialize` response.
+fn handleInitialize(self: *Server, writer: *JsonRpcWriter, id: shared_api.RequestId, params: client_api.InitializeRequest) !void {
+    _ = params;
+    const reply: agent_api.AgentResponse = .{
+        .id = id,
+        .result = .{
+            .initialize = .{
+                .protocolVersion = 1,
+                .agentCapabilities = null,
+                .agentInfo = null,
+                .authMethods = {},
             },
-            .session_new => {
-                const session_state = self.sessions.createSession(.{
-                    self.allocator,
-                    self.io,
-                    acp_config.provider,
-                    acp_config.default_session_config,
-                }) catch {
-                    try self.sendError(arena_allocator, client_request.id, .internal_error, "Failed to create session");
-                    continue;
-                };
+        },
+    };
 
-                const reply: agent_api.AgentResponse = .{
-                    .id = client_request.id,
-                    .result = .{
-                        .session_new = .{
-                            .sessionId = session_state.id,
-                        },
-                    },
-                };
-                var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
-                defer json_rpc_writer.deinit();
-
-                try json_rpc_writer.writeJsonObject(reply, .{});
-            },
-            .session_prompt => {
-                const prompt_blocks = client_request.params.session_prompt.prompt;
-                if (prompt_blocks.len == 0) {
-                    try self.sendError(arena_allocator, client_request.id, .invalid_params, "Prompt array cannot be empty");
-                    continue;
-                }
-
-                const session = self.sessions.getSession(client_request.params.session_prompt.sessionId) catch |err| {
-                    const code: agent_api.JsonRpcErrorCode = if (err == error.SessionNotFound) .session_not_found else .internal_error;
-                    const msg = if (err == error.SessionNotFound) "Session not found" else "Session retrieval error";
-                    try self.sendError(arena_allocator, client_request.id, code, msg);
-                    continue;
-                };
-                var json_rpc_writer = JsonRpcWriter.init(arena_allocator, self.output_writer);
-                defer json_rpc_writer.deinit();
-
-                var combined_prompt: std.ArrayList(u8) = .empty;
-                defer combined_prompt.deinit(arena_allocator);
-                for (prompt_blocks) |block| {
-                    switch (block) {
-                        .text => |txt| try combined_prompt.appendSlice(arena_allocator, txt),
-                    }
-                }
-
-                var ctx: ServerSessionContext = .{
-                    .session_state = session,
-                    .json_rpc_writer = &json_rpc_writer,
-                    .allocator = arena_allocator,
-                };
-
-                _ = session.session.executeTurnStreaming(.{ .prompt = combined_prompt.items }, handleTurnUpdate, &ctx) catch {
-                    try self.sendError(arena_allocator, client_request.id, .internal_error, "Failed to execute turn");
-                    continue;
-                };
-
-                const reply: agent_api.AgentResponse = .{
-                    .id = client_request.id,
-                    .result = .{
-                        .session_prompt = .{
-                            .stopReason = agent_api.StopReason.end_turn,
-                        },
-                    },
-                };
-
-                try json_rpc_writer.writeJsonObject(reply, .{});
-            },
-            .unknown => {
-                try self.sendError(arena_allocator, client_request.id, .method_not_found, "Method not found");
-            },
-        }
-    }
+    try writer.writeJsonObject(self.io, reply, .{});
 }
 
-/// Validates basic ACP JSON-RPC request structure (protocol version and request ID presence).
-fn checkClientRequestValid(request: client_api.ClientRequest) AcpProtocolError!void {
-    if (!std.mem.eql(u8, request.jsonrpc, "2.0")) return AcpProtocolError.InvalidJsonRpcVersion;
-    if (request.id == .null) return AcpProtocolError.MissingId;
+/// Creates a new session storage entry using `acp_config` and responds with the new `sessionId`.
+fn handleSessionNew(self: *Server, writer: *JsonRpcWriter, id: shared_api.RequestId, params: client_api.NewSessionRequest, acp_config: Config) !void {
+    _ = params;
+    const session_state = self.sessions.createSession(.{
+        self.allocator,
+        self.io,
+        acp_config.provider,
+        acp_config.default_session_config,
+    }) catch {
+        try self.sendError(writer, id, .internal_error, "Failed to create session");
+        return;
+    };
+
+    const reply: agent_api.AgentResponse = .{
+        .id = id,
+        .result = .{
+            .session_new = .{
+                .sessionId = session_state.id,
+            },
+        },
+    };
+
+    try writer.writeJsonObject(self.io, reply, .{});
+}
+
+/// Wrapper for `handleSessionPrompt` that allows it to be called from the main async loop.
+///
+/// Takes ownership of `parse_result`, deinit-ing it upon completion.
+fn handleSessionPromptFireAndForget(self: *Server, writer: *JsonRpcWriter, parse_result: std.json.Parsed(client_api.ClientRequest)) Io.Cancelable!void {
+    defer parse_result.deinit();
+    const client_request = parse_result.value;
+    self.handleSessionPrompt(writer, client_request.id, client_request.params.session_prompt) catch |err| {
+        if (err == Io.Cancelable.Canceled) return Io.Cancelable.Canceled;
+    };
+}
+
+/// Validates prompt parameters, joins prompt text blocks, streams turn updates, and sends `session/prompt` response.
+fn handleSessionPrompt(self: *Server, writer: *JsonRpcWriter, id: shared_api.RequestId, params: client_api.PromptRequest) !void {
+    const prompt_blocks = params.prompt;
+    if (prompt_blocks.len == 0) {
+        try self.sendError(writer, id, .invalid_params, "Prompt array cannot be empty");
+        return;
+    }
+
+    const session = self.sessions.getSession(params.sessionId) catch |err| {
+        const code: agent_api.JsonRpcErrorCode = if (err == error.SessionNotFound) .session_not_found else .internal_error;
+        const msg = if (err == error.SessionNotFound) "Session not found" else "Session retrieval error";
+        try self.sendError(writer, id, code, msg);
+        return;
+    };
+
+    var combined_prompt: std.ArrayList(u8) = .empty;
+    defer combined_prompt.deinit(self.allocator);
+    for (prompt_blocks) |block| {
+        switch (block) {
+            .text => |txt| try combined_prompt.appendSlice(self.allocator, txt),
+        }
+    }
+
+    var ctx: ServerSessionContext = .{
+        .session_state = session,
+        .json_rpc_writer = writer,
+        .allocator = self.allocator,
+        .io = self.io,
+    };
+
+    _ = session.session.executeTurnStreaming(.{ .prompt = combined_prompt.items }, handleTurnUpdate, &ctx) catch |err| {
+        var err_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&err_buf, "Turn execution failed: {s}", .{@errorName(err)}) catch "Turn execution failed";
+        try self.sendError(writer, id, .internal_error, msg);
+        return;
+    };
+
+    const reply: agent_api.AgentResponse = .{
+        .id = id,
+        .result = .{
+            .session_prompt = .{
+                .stopReason = agent_api.StopReason.end_turn,
+            },
+        },
+    };
+
+    try writer.writeJsonObject(self.io, reply, .{});
 }
 
 test "Server error handling - malformed JSON and recovery" {
@@ -313,3 +345,48 @@ test "Server prompt handling - multiple items in prompt array" {
     try std.testing.expectEqualStrings("Hello world!", mock_provider.last_input_steps.?[0].prompt);
 }
 
+test "Server prompt handling - turn execution failure includes error name" {
+    const testing = @import("testing");
+    const allocator = std.testing.allocator;
+
+    var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
+    const prov = mock_provider.provider();
+
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        error.HttpRequestFailed,
+    };
+    mock_provider.execute_step_results = &outcomes;
+
+    const input =
+        \\{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}
+        \\{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"session_0","prompt":[{"type":"text","text":"Hello"}]}}
+    ;
+    var reader_buf = std.Io.Reader.fixed(input);
+    var buffer = std.Io.Writer.Allocating.init(allocator);
+    defer buffer.deinit();
+
+    var server = Server.init(allocator, std.testing.io, &reader_buf, &buffer.writer);
+    defer server.deinit();
+
+    try server.run(.{
+        .provider = prov,
+        .default_session_config = .{
+            .model = .{ .id = "mock-model", .display_name = "Mock Model" },
+        },
+    });
+
+    const output = buffer.written();
+    try std.testing.expect(std.mem.indexOf(u8, output, "-32603") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Turn execution failed: HttpRequestFailed") != null);
+}
+
+test "checkClientRequestValid - method params mismatch" {
+    const request = client_api.ClientRequest{
+        .jsonrpc = "2.0",
+        .id = .{ .integer = 1 },
+        .method = .session_new,
+        .params = .{ .initialize = .{ .protocolVersion = 1 } },
+    };
+    try std.testing.expectError(AcpProtocolError.MethodParamsMismatch, checkClientRequestValid(request));
+}
