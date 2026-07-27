@@ -110,6 +110,8 @@ To run COMA as an ACP server over stdio for external client integrations:
 zig build run -- --acp
 ```
 
+You can test the ACP server with [coma-acp-repl](https://github.com/mrazza/coma-acp-repl).
+
 ### 4. Run the Test Suite & Coverage
 To compile and execute all tests:
 
