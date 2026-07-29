@@ -61,7 +61,8 @@ pub fn execute(self: *const Tool, allocator: Allocator, io: Io, session_state: *
 ///
 /// Additionally, the function can optionally accept an Io struct which represents the IO to use
 /// during the tool call, and/or a ToolCallContext struct which provides access to a session-scoped
-/// state store and the ability to consiste
+/// state store and the ability to define arbitrary context messages to inject before each turn.
+/// The function MUST be thread-safe as multiple calls to the tool function can occur in parallel.
 ///
 /// The `execute_fn` should return the result of the tool call as a string and transfer
 /// ownership of the memory to the caller. The result will be passed to the LLM as the
