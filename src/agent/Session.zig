@@ -1,8 +1,7 @@
 //! Represents a single agentic session with the specified provider.
 //!
-//! A session is a single context window with an agent model as well
-//! as the configuration associated with that context window (tools,
-//! system prompt, etc).
+//! A session is a single context window with an agent model as well as the configuration
+//! associated with that context window (tools, system prompt, etc).
 
 const std = @import("std");
 const llm = @import("llm");
@@ -148,7 +147,6 @@ fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*Str
     }
 
     while (true) {
-
         const step_outcome = if (callback_context) |cb|
             try self.provider.executeStepStreaming(
                 allocator,

@@ -1,4 +1,6 @@
 //! Manages the storage and tracking of sessions in an ACP server.
+//!
+//! This struct is NOT thread-safe.
 
 const std = @import("std");
 const agent = @import("agent");

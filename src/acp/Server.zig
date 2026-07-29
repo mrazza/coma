@@ -199,7 +199,7 @@ fn handleSessionPromptFireAndForget(self: *Server, writer: *JsonRpcWriter, parse
 
 /// Validates prompt parameters, joins prompt text blocks, streams turn updates, and sends `session/prompt` response.
 ///
-/// TODO(raza): This method currently assume that only one prompt will ever be active for a given session at a time.
+/// TODO(razza): This method currently assume that only one prompt will ever be active for a given session at a time.
 /// This gurantee does not exist. We should either buffer the prompts or block/lock waiting to acquire exclusive access
 /// to the session.
 fn handleSessionPrompt(self: *Server, writer: *JsonRpcWriter, id: shared_api.RequestId, params: client_api.PromptRequest) !void {
