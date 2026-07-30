@@ -407,7 +407,7 @@ test "checkClientRequestValid - method params mismatch" {
     try std.testing.expectError(AcpProtocolError.MethodParamsMismatch, checkClientRequestValid(request));
 }
 
-test "Server state - isRunning lifecycle" {
+test isRunning {
     const allocator = std.testing.allocator;
 
     // An immediate end of stream will cause a quick exit, but we still need to
