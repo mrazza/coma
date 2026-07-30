@@ -43,6 +43,7 @@ io: Io,
 input_reader: *Io.Reader,
 output_writer: *Io.Writer,
 sessions: SessionStorage,
+run_mutex: Io.Mutex,
 
 /// Initializes a new ACP `Server` with the provided allocator, I/O context, reader, and writer.
 pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_writer: *Io.Writer) Server {
@@ -52,12 +53,18 @@ pub fn init(allocator: Allocator, io: Io, input_reader: *Io.Reader, output_write
         .input_reader = input_reader,
         .output_writer = output_writer,
         .sessions = .init(allocator),
+        .run_mutex = .init,
     };
 }
 
 /// Deinitializes the server and frees all tracked session resources.
 pub fn deinit(self: *Server) void {
     self.sessions.deinit();
+}
+
+/// Returns true if the server is running.
+pub fn isRunning(self: *const Server) bool {
+    return self.run_mutex.state.raw != .unlocked;
 }
 
 /// Runs the main server request handling loop.
@@ -68,6 +75,11 @@ pub fn deinit(self: *Server) void {
 /// This method blocks. As a result, it may make sense to launch this concurrently.
 /// It can be terminated by requesting cancelation via `Io.cancel`.
 pub fn run(self: *Server, acp_config: Config) !void {
+    if (!self.run_mutex.tryLock()) {
+        return error.ServerAlreadyRunning;
+    }
+    defer self.run_mutex.unlock(self.io);
+
     var json_rpc_reader = JsonRpcReader.init(self.allocator, self.input_reader);
     defer json_rpc_reader.deinit();
     var json_rpc_writer = JsonRpcWriter.init(self.allocator, self.output_writer);
@@ -393,4 +405,54 @@ test "checkClientRequestValid - method params mismatch" {
         .params = .{ .initialize = .{ .protocolVersion = 1 } },
     };
     try std.testing.expectError(AcpProtocolError.MethodParamsMismatch, checkClientRequestValid(request));
+}
+
+test "Server state - isRunning lifecycle" {
+    const allocator = std.testing.allocator;
+
+    // An immediate end of stream will cause a quick exit, but we still need to
+    // check that the lock is acquired and released correctly.
+    var reader_buf = std.Io.Reader.fixed("");
+    var buffer = std.Io.Writer.Allocating.init(allocator);
+    defer buffer.deinit();
+
+    var server = Server.init(allocator, std.testing.io, &reader_buf, &buffer.writer);
+    defer server.deinit();
+
+    try std.testing.expect(!server.isRunning());
+
+    try server.run(.{ .provider = undefined, .default_session_config = undefined });
+
+    try std.testing.expect(!server.isRunning());
+}
+
+test "Server concurrency - error.ServerAlreadyRunning" {
+    const testing = @import("testing");
+    const allocator = std.testing.allocator;
+
+    var blocking_reader = testing.BlockingReader.init(std.testing.io);
+    var buffer = std.Io.Writer.Allocating.init(allocator);
+    defer buffer.deinit();
+
+    var server = Server.init(allocator, std.testing.io, &blocking_reader.reader, &buffer.writer);
+    defer server.deinit();
+
+    const Helper = struct {
+        fn runServer(s: *Server) Io.Cancelable!void {
+            s.run(.{ .provider = undefined, .default_session_config = undefined }) catch {};
+        }
+    };
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(std.testing.io);
+
+    group.async(std.testing.io, Helper.runServer, .{&server});
+
+    blocking_reader.waitUntilStarted();
+    try std.testing.expect(server.isRunning());
+    try std.testing.expectError(error.ServerAlreadyRunning, server.run(.{ .provider = undefined, .default_session_config = undefined }));
+
+    blocking_reader.stop();
+    group.cancel(std.testing.io);
+    try std.testing.expect(!server.isRunning());
 }
