@@ -24,9 +24,10 @@ tools: []const Tool,
 session_config: llm.types.SessionConfig,
 prev_continuation: ?llm.types.StepContinuation,
 session_state: SessionState,
+turn_mutex: Io.Mutex,
 
 const ToolError = error{ToolNotFound} || Tool.CallError;
-pub const SessionError = ToolError || Provider.ProviderError;
+pub const SessionError = error{TurnAlreadyRunning} || ToolError || Provider.ProviderError;
 
 /// Initializes a new Session instance.
 ///
@@ -53,6 +54,7 @@ pub fn init(allocator: Allocator, io: Io, provider: Provider, config: types.Sess
         },
         .prev_continuation = null,
         .session_state = .init(allocator),
+        .turn_mutex = .init,
     };
 }
 
@@ -122,6 +124,11 @@ fn executeToolCall(self: *Session, tool_call: llm.types.ToolCall) ToolError!llm.
 }
 
 fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*StreamingContext) SessionError!types.TurnResult {
+    if (!self.turn_mutex.tryLock()) {
+        return SessionError.TurnAlreadyRunning;
+    }
+    defer self.turn_mutex.unlock(self.io);
+
     var next_steps: std.ArrayList(llm.types.Step) = .empty;
     const allocator = self.allocator;
     const io = self.io;
@@ -843,4 +850,182 @@ test "Session.executeTurn prepends injected context added during tool execution"
     const expected_ctx = "[TOOL_CONTEXT: context_setter_tool]\nNew context from tool execution\n[/TOOL_CONTEXT]\n\n";
     try std.testing.expectEqualStrings(expected_ctx, mock_provider.last_input_steps.?[0].prompt);
     try std.testing.expectEqualStrings("Follow up prompt", mock_provider.last_input_steps.?[1].prompt);
+}
+
+test "Session.executeTurn - error.TurnAlreadyRunning when turn is in progress" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
+    const prov = mock_provider.provider();
+
+    var blocking_tool = testing.BlockingTool.init(io);
+    const tool = blocking_tool.toolWithContext(Tool);
+
+    var session = try Session.init(
+        allocator,
+        io,
+        prov,
+        .{
+            .model = .{ .id = "mock-model", .display_name = "Mock Model" },
+            .tools = &.{tool},
+        },
+    );
+    defer session.deinit();
+
+    const tool_calls = [_]llm.types.ToolCall{
+        .{
+            .id = "call-blocking-1",
+            .name = testing.BlockingTool.descriptor.name,
+            .arguments = &.{},
+        },
+    };
+    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    const result2 = testing.MockProvider.stepResult(&.{.{ .text = "Finished blocking turn" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = result2, .continuation = testing.MockProvider.stepContinuation() },
+    };
+    mock_provider.execute_step_results = &outcomes;
+
+    const Helper = struct {
+        finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+        fn runTurn(self: *@This(), s: *Session) std.Io.Cancelable!void {
+            defer self.finished.store(true, .monotonic);
+            var res = s.executeTurn(.{ .prompt = "Turn 1" }) catch return;
+            res.deinit();
+        }
+
+        fn waitUntilFinished(self: *@This()) void {
+            var attempts: usize = 0;
+            while (!self.finished.load(.monotonic) and attempts < 1_000_000) : (attempts += 1) {
+                std.atomic.spinLoopHint();
+            }
+        }
+    };
+
+    var helper = Helper{};
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+
+    group.async(io, Helper.runTurn, .{ &helper, &session });
+
+    blocking_tool.waitUntilStarted();
+
+    const turn2 = types.Turn{ .prompt = "Turn 2 concurrent" };
+    try std.testing.expectError(error.TurnAlreadyRunning, session.executeTurn(turn2));
+
+    blocking_tool.stop();
+    helper.waitUntilFinished();
+    group.cancel(io);
+}
+
+test "Session.executeTurnStreaming - error.TurnAlreadyRunning when turn is in progress" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
+    const prov = mock_provider.provider();
+
+    var blocking_tool = testing.BlockingTool.init(io);
+    const tool = blocking_tool.toolWithContext(Tool);
+
+    var session = try Session.init(
+        allocator,
+        io,
+        prov,
+        .{
+            .model = .{ .id = "mock-model", .display_name = "Mock Model" },
+            .tools = &.{tool},
+        },
+    );
+    defer session.deinit();
+
+    const tool_calls = [_]llm.types.ToolCall{
+        .{
+            .id = "call-blocking-1",
+            .name = testing.BlockingTool.descriptor.name,
+            .arguments = &.{},
+        },
+    };
+    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    const result2 = testing.MockProvider.stepResult(&.{.{ .text = "Finished blocking turn" }}, &.{}, &.{});
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = result2, .continuation = testing.MockProvider.stepContinuation() },
+    };
+    mock_provider.execute_step_results = &outcomes;
+
+    const Helper = struct {
+        finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+        fn runTurn(self: *@This(), s: *Session) std.Io.Cancelable!void {
+            defer self.finished.store(true, .monotonic);
+            var res = s.executeTurn(.{ .prompt = "Turn 1" }) catch return;
+            res.deinit();
+        }
+
+        fn waitUntilFinished(self: *@This()) void {
+            var attempts: usize = 0;
+            while (!self.finished.load(.monotonic) and attempts < 1_000_000) : (attempts += 1) {
+                std.atomic.spinLoopHint();
+            }
+        }
+    };
+
+    var helper = Helper{};
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+
+    group.async(io, Helper.runTurn, .{ &helper, &session });
+
+    blocking_tool.waitUntilStarted();
+
+    const nop_cb = struct {
+        fn cb(_: ?*anyopaque, _: types.StreamingChunk) void {}
+    }.cb;
+
+    const turn2 = types.Turn{ .prompt = "Turn 2 streaming concurrent" };
+    try std.testing.expectError(error.TurnAlreadyRunning, session.executeTurnStreaming(turn2, nop_cb, null));
+
+    blocking_tool.stop();
+    helper.waitUntilFinished();
+    group.cancel(io);
+}
+
+test "Session.executeTurn - sequential turns execute successfully" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var mock_provider = testing.MockProvider{};
+    defer mock_provider.deinit();
+    const prov = mock_provider.provider();
+
+    var session = try Session.init(
+        allocator,
+        io,
+        prov,
+        .{
+            .model = .{ .id = "mock-model", .display_name = "Mock Model" },
+            .tools = &.{},
+        },
+    );
+    defer session.deinit();
+
+    const step_result1 = testing.MockProvider.stepResult(&.{.{ .text = "Turn 1 output" }}, &.{}, &.{});
+    const step_result2 = testing.MockProvider.stepResult(&.{.{ .text = "Turn 2 output" }}, &.{}, &.{});
+
+    const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
+        .{ .result = step_result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = step_result2, .continuation = testing.MockProvider.stepContinuation() },
+    };
+    mock_provider.execute_step_results = &outcomes;
+
+    var res1 = try session.executeTurn(.{ .prompt = "Turn 1" });
+    defer res1.deinit();
+    try std.testing.expectEqualStrings("Turn 1 output", res1.final_step.model_output[0].text);
+
+    var res2 = try session.executeTurn(.{ .prompt = "Turn 2" });
+    defer res2.deinit();
+    try std.testing.expectEqualStrings("Turn 2 output", res2.final_step.model_output[0].text);
 }

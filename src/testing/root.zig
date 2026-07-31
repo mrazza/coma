@@ -1,4 +1,5 @@
 pub const BlockingReader = @import("BlockingReader.zig");
+pub const BlockingTool = @import("BlockingTool.zig");
 pub const MockHttpClient = @import("MockHttpClient.zig");
 pub const MockProvider = @import("MockProvider.zig");
 

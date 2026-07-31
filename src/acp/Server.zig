@@ -19,6 +19,7 @@ pub const Config = @import("Config.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const SessionError = agent.Session.SessionError;
 
 /// Protocol errors encountered when decoding or validating ACP JSON-RPC requests.
 pub const AcpProtocolError = error{
@@ -244,9 +245,16 @@ fn handleSessionPrompt(self: *Server, writer: *JsonRpcWriter, id: shared_api.Req
     };
 
     _ = session.session.executeTurnStreaming(.{ .prompt = combined_prompt.items }, handleTurnUpdate, &ctx) catch |err| {
-        var err_buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&err_buf, "Turn execution failed: {s}", .{@errorName(err)}) catch "Turn execution failed";
-        try self.sendError(writer, id, .internal_error, msg);
+        switch (err) {
+            SessionError.TurnAlreadyRunning => {
+                try self.sendError(writer, id, .invalid_state, "Can't execute prompt, session already has an active turn");
+            },
+            else => {
+                var err_buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&err_buf, "Turn execution failed: {s}", .{@errorName(err)}) catch "Turn execution failed";
+                try self.sendError(writer, id, .internal_error, msg);
+            },
+        }
         return;
     };
 

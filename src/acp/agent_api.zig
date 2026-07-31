@@ -42,6 +42,8 @@ pub const JsonRpcErrorCode = enum(i32) {
     internal_error = -32603,
     /// The requested session ID was not found.
     session_not_found = -32001,
+    /// The session is not in a state where the requested action can be performed.
+    invalid_state = -32003,
 
     pub fn jsonStringify(self: JsonRpcErrorCode, jw: anytype) !void {
         try jw.write(@intFromEnum(self));
