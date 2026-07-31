@@ -119,7 +119,7 @@ pub fn main(init: std.process.Init) !void {
     var selected_model: ?llm.types.Model = null;
 
     selected_model = for (models) |model| {
-        if (std.mem.containsAtLeast(u8, model.display_name, 1, "3 Flash")) {
+        if (std.mem.containsAtLeast(u8, model.display_name, 1, "3.5 Flash Lite")) {
             break model;
         }
     } else unreachable;
