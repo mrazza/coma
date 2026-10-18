@@ -155,7 +155,7 @@ pub fn main(init: std.process.Init) !void {
 
     var weather_tool = WeatherTool.init("Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph");
 
-    var typescript_tool = Tool.initStateless(.{
+    var typescript_tool = Tool.fromFn(.{
         .name = "execute_typescript",
         .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
         .parameters = &.{
