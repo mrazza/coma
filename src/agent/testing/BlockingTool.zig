@@ -4,6 +4,7 @@
 const std = @import("std");
 const Io = std.Io;
 const llm = @import("llm");
+const Tool = @import("../Tool.zig");
 
 const BlockingTool = @This();
 
@@ -14,21 +15,21 @@ pub const descriptor: llm.types.Tool = .{
     .parameters = &.{},
 };
 
+tool: Tool,
 started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 should_stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 io: Io,
 
 pub fn init(io: Io) BlockingTool {
-    return .{ .io = io };
+    return .{
+        .tool = Tool.init(descriptor, execute),
+        .io = io,
+    };
 }
 
-/// Creates an agent Tool instance bound to this BlockingTool context.
-pub fn toolWithContext(self: *BlockingTool, comptime Tool: type) Tool {
-    return Tool.initWithContext(descriptor, execute, self, null);
-}
-
-/// Execution function compatible with agent.Tool.initWithContext.
-pub fn execute(self: *BlockingTool, alloc: std.mem.Allocator) error{ ArgumentMismatch, ArgumentTypeMismatch, OutOfMemory, RequiredArgumentMissing }![]const u8 {
+/// Execution function using @fieldParentPtr.
+pub fn execute(tool_ptr: *const Tool, alloc: std.mem.Allocator) error{ ArgumentMismatch, ArgumentTypeMismatch, OutOfMemory, RequiredArgumentMissing }![]const u8 {
+    const self: *BlockingTool = @constCast(@fieldParentPtr("tool", tool_ptr));
     self.started.store(true, .monotonic);
     while (!self.should_stop.load(.monotonic)) {
         self.io.checkCancel() catch return error.OutOfMemory;
@@ -42,7 +43,7 @@ pub fn isStarted(self: *const BlockingTool) bool {
 }
 
 /// Blocks until the tool execution function is entered.
-pub fn waitUntilStarted(self: *BlockingTool) void {
+pub fn waitUntilStarted(self: *const BlockingTool) void {
     var attempts: usize = 0;
     while (!self.isStarted() and attempts < 1_000_000) : (attempts += 1) {
         std.atomic.spinLoopHint();

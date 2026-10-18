@@ -339,9 +339,9 @@ test "Server prompt handling - multiple items in prompt array" {
     defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
-    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Response text" }}, &.{}, &.{});
+    var step_result = testing.MockProvider.stepResult(&.{.{ .text = "Response text" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 

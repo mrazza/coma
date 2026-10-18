@@ -15,6 +15,8 @@ const StepOutcome = types.StepOutcome;
 
 const MockProvider = @This();
 
+interface: Provider = .{ .vtable = &vtable },
+
 /// Tracks the number of times `listModels` was called.
 list_models_calls: usize = 0,
 /// Tracks the number of times `executeStep` was called.
@@ -31,10 +33,10 @@ last_session_config: ?SessionConfig = null,
 /// Stores the input steps from the last `executeStep` call.
 last_input_steps: ?[]const Step = null,
 /// Stores the previous step from the last `executeStep` call.
-last_previous_step: ?StepContinuation = null,
+last_previous_step: ?*const StepContinuation = null,
 
 /// Optional fixed result to return from `listModels`.
-list_models_result: ?(Provider.ProviderError!ListModelsResult) = null,
+list_models_result: ?(Provider.ProviderError!*ListModelsResult) = null,
 /// Optional sequence of results/outcomes to return from successive `executeStep` or `executeStepStreaming` calls.
 execute_step_results: ?[]const (Provider.ProviderError!StepOutcome) = null,
 /// Whether to loop back to the start of execute_step_results when more calls are made than outcomes available.
@@ -50,46 +52,62 @@ const vtable = Provider.VTable{
 };
 
 /// Returns the generic `llm.Provider` interface for this mock instance.
-pub fn provider(self: *MockProvider) Provider {
-    return .{
-        .ptr = self,
-        .vtable = &vtable,
-    };
+pub fn provider(self: *MockProvider) *Provider {
+    return &self.interface;
 }
 
 /// A dummy virtual table for `ListModelsResult` used by the mock.
 pub const mock_list_models_vtable = ListModelsResult.VTable{
-    .deinit = dummyDeinit,
+    .deinit = dummyDeinitListModels,
 };
 
 /// A dummy virtual table for `StepResult` used by the mock.
 pub const mock_step_vtable = StepResult.VTable{
-    .deinit = dummyDeinit,
+    .deinit = dummyDeinitStepResult,
 };
 
 /// A dummy virtual table for `StepContinuation` used by the mock.
 pub const mock_continuation_vtable = StepContinuation.VTable{
-    .deinit = dummyDeinit,
+    .deinit = dummyDeinitStepContinuation,
 };
 
-/// A no-op implementation of `deinit`.
-fn dummyDeinit(ptr: *anyopaque) void {
-    _ = ptr;
+var default_step_result: StepResult = .{
+    .model_output = &.{},
+    .thoughts = &.{},
+    .tool_calls = &.{},
+    .vtable = &mock_step_vtable,
+};
+
+var default_step_continuation: StepContinuation = .{
+    .vtable = &mock_continuation_vtable,
+};
+
+var default_list_models_result: ListModelsResult = .{
+    .models = &.{},
+    .vtable = &mock_list_models_vtable,
+};
+
+fn dummyDeinitListModels(self: *ListModelsResult) void {
+    _ = self;
+}
+
+fn dummyDeinitStepResult(self: *StepResult) void {
+    _ = self;
+}
+
+fn dummyDeinitStepContinuation(self: *StepContinuation) void {
+    _ = self;
 }
 
 /// Mock implementation of `listModels`.
-fn list_models(ptr: *anyopaque, allocator: Allocator) Provider.ProviderError!ListModelsResult {
-    const self: *MockProvider = @ptrCast(@alignCast(ptr));
+fn list_models(prov: *Provider, allocator: Allocator) Provider.ProviderError!*ListModelsResult {
+    const self: *MockProvider = @fieldParentPtr("interface", prov);
     self.list_models_calls += 1;
     self.last_allocator = allocator;
     if (self.list_models_result) |res| {
         return res;
     }
-    return ListModelsResult{
-        .models = &.{},
-        .ptr = ptr,
-        .vtable = &mock_list_models_vtable,
-    };
+    return &default_list_models_result;
 }
 
 fn clearLastInputSteps(self: *MockProvider) void {
@@ -129,13 +147,13 @@ fn recordInputSteps(self: *MockProvider, allocator: Allocator, input: []const St
 
 /// Mock implementation of `executeStep`.
 fn execute_step(
-    ptr: *anyopaque,
+    prov: *Provider,
     allocator: Allocator,
     session_config: SessionConfig,
     input: []const Step,
-    previous_step: ?StepContinuation,
+    previous_step: ?*const StepContinuation,
 ) Provider.ProviderError!StepOutcome {
-    const self: *MockProvider = @ptrCast(@alignCast(ptr));
+    const self: *MockProvider = @fieldParentPtr("interface", prov);
     self.execute_step_calls += 1;
     self.last_allocator = allocator;
     self.last_session_config = session_config;
@@ -155,28 +173,22 @@ fn execute_step(
         }
     }
     return StepOutcome{
-        .result = StepResult{
-            .model_output = &.{},
-            .thoughts = &.{},
-            .tool_calls = &.{},
-            .ptr = ptr,
-            .vtable = &mock_step_vtable,
-        },
-        .continuation = StepContinuation{ .ptr = ptr, .vtable = &mock_continuation_vtable },
+        .result = &default_step_result,
+        .continuation = &default_step_continuation,
     };
 }
 
 /// Mock implementation of `executeStepStreaming`.
 fn execute_step_streaming(
-    ptr: *anyopaque,
+    prov: *Provider,
     allocator: Allocator,
     session_config: SessionConfig,
     input: []const Step,
-    previous_step: ?StepContinuation,
+    previous_step: ?*const StepContinuation,
     callback: types.StreamingCallback,
     callback_context: ?*anyopaque,
 ) Provider.ProviderError!StepOutcome {
-    const self: *MockProvider = @ptrCast(@alignCast(ptr));
+    const self: *MockProvider = @fieldParentPtr("interface", prov);
     self.execute_step_streaming_calls += 1;
     self.last_allocator = allocator;
     self.last_session_config = session_config;
@@ -209,21 +221,15 @@ fn execute_step_streaming(
         }
     }
     return StepOutcome{
-        .result = StepResult{
-            .model_output = &.{},
-            .thoughts = &.{},
-            .tool_calls = &.{},
-            .ptr = ptr,
-            .vtable = &mock_step_vtable,
-        },
-        .continuation = StepContinuation{ .ptr = ptr, .vtable = &mock_continuation_vtable },
+        .result = &default_step_result,
+        .continuation = &default_step_continuation,
     };
 }
 
 /// Mock implementation of `deinit`.
-fn deinitVtable(ctx: *anyopaque) void {
-    const self: *MockProvider = @ptrCast(@alignCast(ctx));
-    deinit(self);
+fn deinitVtable(prov: *Provider) void {
+    const self: *MockProvider = @fieldParentPtr("interface", prov);
+    self.deinit();
 }
 
 pub fn deinit(self: *MockProvider) void {
@@ -241,24 +247,19 @@ pub fn stepResult(
         .model_output = model_output,
         .thoughts = thoughts,
         .tool_calls = tool_calls,
-        .ptr = @constCast(&mock_step_vtable),
         .vtable = &mock_step_vtable,
     };
 }
 
 /// Helper constructor to create a mock `StepContinuation` with standard mock vtable.
-pub fn stepContinuation() StepContinuation {
-    return .{
-        .ptr = @constCast(&mock_continuation_vtable),
-        .vtable = &mock_continuation_vtable,
-    };
+pub fn stepContinuation() *StepContinuation {
+    return &default_step_continuation;
 }
 
 /// Helper constructor to create a mock `ListModelsResult` with standard mock vtable.
 pub fn listModelsResult(models: []const types.Model) ListModelsResult {
     return .{
         .models = models,
-        .ptr = @constCast(&mock_list_models_vtable),
         .vtable = &mock_list_models_vtable,
     };
 }
