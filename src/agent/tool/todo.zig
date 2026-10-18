@@ -6,7 +6,7 @@ const agent = @import("../root.zig");
 const SessionState = @import("../SessionState.zig");
 
 /// `write_todo` tool for creating, updating, or clearing the persistent TODO list.
-pub const Tool = agent.Tool.init(.{
+pub const Tool = agent.Tool.initStateless(.{
     .name = "write_todo",
     .description =
     \\Overwrite the entire TODO content.

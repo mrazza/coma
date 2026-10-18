@@ -64,7 +64,30 @@ pub fn execute(self: *const Tool, allocator: Allocator, io: Io, session_state: *
     return ToolResult.initTakingResultOwnership(allocator, self.descriptor.name, id, result);
 }
 
-/// Creates a Tool from a descriptor and a function.
+/// Wraps an execution function into a `ToolExecuteFn` suitable for a `Tool.VTable`.
+///
+/// Validates at compile time that the function parameters match the tool descriptor.
+/// Stateful tools that take `*const Tool` or `*Tool` should use this function to populate
+/// their `VTable.execute`.
+pub fn wrapExecute(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) ToolExecuteFn {
+    return comptime blk: {
+        for (descriptor.parameters, 0..) |p1, i| {
+            for (descriptor.parameters, 0..) |p2, j| {
+                if (i != j and std.mem.eql(u8, p1.name, p2.name)) {
+                    @compileError("Duplicate parameter name: " ++ p1.name);
+                }
+            }
+        }
+
+        const res = makeExecuteFn(descriptor, execute_fn);
+        break :blk switch (res) {
+            .ok => |f| f,
+            .err => |e| @compileError(e.msg),
+        };
+    };
+}
+
+/// Creates a stateless Tool from a descriptor and a function.
 /// Tool calls will delegate to the provided function when called.
 ///
 /// `descriptor` is the tool's descriptor defining the structure of the tool for the LLM.
@@ -76,34 +99,24 @@ pub fn execute(self: *const Tool, allocator: Allocator, io: Io, session_state: *
 /// are still in the same order as the parameters in the descriptor.
 ///
 /// Additionally, the function can optionally accept an Io struct which represents the IO to use
-/// during the tool call, a ToolCallContext struct, and/or a `*const Tool` pointer.
+/// during the tool call and/or a ToolCallContext struct.
+/// The function MUST NOT accept a `*const Tool` or `*Tool` parameter. For stateful tools,
+/// define a custom struct embedding `tool: Tool`, use `Tool.wrapExecute` in a `Tool.VTable`,
+/// and use `@fieldParentPtr`.
 /// The function MUST be thread-safe as multiple calls to the tool function can occur in parallel.
 ///
 /// The `execute_fn` should return the result of the tool call as a string and transfer
 /// ownership of the memory to the caller. The result will be passed to the LLM as the
 /// result of the tool call.
-pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
-    return initWithDeinit(descriptor, execute_fn, null);
-}
+pub fn initStateless(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
+    if (comptime takesToolParam(@TypeOf(execute_fn))) {
+        @compileError("Stateless tool function '" ++ descriptor.name ++ "' cannot take a *Tool parameter. Construct a Tool with a VTable and Tool.wrapExecute instead.");
+    }
 
-/// Creates a Tool from a descriptor, an execute function, and an optional deinit function.
-pub fn initWithDeinit(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype, comptime deinit_fn: ?ToolDeinitFn) Tool {
     return comptime blk: {
-        for (descriptor.parameters, 0..) |p1, i| {
-            for (descriptor.parameters, 0..) |p2, j| {
-                if (i != j and std.mem.eql(u8, p1.name, p2.name)) {
-                    @compileError("Duplicate parameter name: " ++ p1.name);
-                }
-            }
-        }
-
-        const res = makeExecuteFn(descriptor, execute_fn);
         const vtable: VTable = .{
-            .execute = switch (res) {
-                .ok => |f| f,
-                .err => |e| @compileError(e.msg),
-            },
-            .deinit = deinit_fn,
+            .execute = wrapExecute(descriptor, execute_fn),
+            .deinit = null,
         };
 
         break :blk Tool{
@@ -135,6 +148,25 @@ const ValidationResult = union(enum) {
         msg: []const u8,
     },
 };
+
+fn takesToolParam(comptime FnType: type) bool {
+    const fn_info = switch (@typeInfo(FnType)) {
+        .@"fn" => |info| info,
+        .pointer => |ptr_info| switch (@typeInfo(ptr_info.child)) {
+            .@"fn" => |info| info,
+            else => return false,
+        },
+        else => return false,
+    };
+    inline for (fn_info.params) |param| {
+        if (param.type) |T| {
+            if (T == *const Tool or T == *Tool) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 fn expectedTagForType(comptime T: type) ValidationError!struct { tag: std.meta.Tag(Argument.Value), required: bool } {
     var InputT = T;
@@ -289,7 +321,18 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
     };
 }
 
-test init {
+test takesToolParam {
+    const S = struct {
+        fn fConstTool(_: *const Tool) void {}
+        fn fTool(_: *Tool) void {}
+        fn fStateless(_: Allocator, _: i64) void {}
+    };
+    try std.testing.expect(takesToolParam(@TypeOf(S.fConstTool)));
+    try std.testing.expect(takesToolParam(@TypeOf(S.fTool)));
+    try std.testing.expect(!takesToolParam(@TypeOf(S.fStateless)));
+}
+
+test initStateless {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var session_state = SessionState.init(allocator);
@@ -318,7 +361,7 @@ test init {
             return try std.fmt.allocPrint(allocator, "{d}{s}", .{ arg1, arg2 });
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.example_function);
+    const tool = comptime initStateless(tool_descriptor, tool_impl.example_function);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 12 } },
@@ -361,13 +404,20 @@ test "stateful tool with @fieldParentPtr" {
         tool: Tool,
         prefix: []const u8,
 
+        const vtable: Tool.VTable = .{
+            .execute = Tool.wrapExecute(tool_descriptor, run),
+        };
+
         fn run(tool: *const Tool, alloc: Allocator, arg1: i64, arg2: []const u8) ![]const u8 {
             const self: *const @This() = @fieldParentPtr("tool", tool);
             return try std.fmt.allocPrint(alloc, "{s}{d}{s}", .{ self.prefix, arg1, arg2 });
         }
     };
     var stateful_tool = StatefulTool{
-        .tool = Tool.init(tool_descriptor, StatefulTool.run),
+        .tool = .{
+            .descriptor = tool_descriptor,
+            .vtable = &StatefulTool.vtable,
+        },
         .prefix = "ctx-",
     };
 
@@ -598,7 +648,7 @@ test execute {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.initStateless(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "arg1",
@@ -636,7 +686,7 @@ test "execute - unknown argument" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.initStateless(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "unknown",
@@ -669,7 +719,7 @@ test "execute - extra argument ignored" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.initStateless(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "arg1",
@@ -708,7 +758,7 @@ test "execute - missing required argument" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.initStateless(desc, Impl.run);
     const args: []const Argument = &.{};
     try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, io, &session_state, "id", args));
 }
@@ -737,7 +787,7 @@ test "execute - missing optional argument" {
             return allocator.dupe(u8, "default");
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.initStateless(desc, Impl.run);
     const args: []const Argument = &.{};
     var result = try tool.execute(testing_allocator, io, &session_state, "id", args);
     defer result.deinit();
@@ -771,7 +821,7 @@ test "execute - optional argument provided" {
             return allocator.dupe(u8, "default");
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.initStateless(desc, Impl.run);
     const args: []const Argument = &.{
         .{ .name = "arg1", .value = .{ .string = "provided" } },
     };
@@ -806,7 +856,7 @@ test "execute - argument type mismatch" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.initStateless(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "arg1",
@@ -839,7 +889,7 @@ test "execute - no Allocator parameter" {
             return allocator.dupe(u8, arg1);
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.no_allocator_func);
+    const tool = comptime initStateless(tool_descriptor, tool_impl.no_allocator_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .string = "hello" } },
@@ -882,7 +932,7 @@ test "execute - Allocator as middle/last parameter" {
             return try std.fmt.allocPrint(tool_allocator, "middle-{d}-{s}", .{ arg1, arg2 });
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.middle_last_allocator_func);
+    const tool = comptime initStateless(tool_descriptor, tool_impl.middle_last_allocator_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 99 } },
@@ -921,7 +971,7 @@ test "execute - multiple Allocator parameters" {
             return try std.fmt.allocPrint(alloc1, "multi-{d}", .{arg1});
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.multi_allocator_func);
+    const tool = comptime initStateless(tool_descriptor, tool_impl.multi_allocator_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 7 } },
@@ -959,7 +1009,7 @@ test "execute - Io parameter" {
             return try std.fmt.allocPrint(tool_allocator, "io-{s}", .{arg1});
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.io_func);
+    const tool = comptime initStateless(tool_descriptor, tool_impl.io_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .string = "test" } },
@@ -998,7 +1048,7 @@ test "execute - multiple Io parameters" {
             return try std.fmt.allocPrint(tool_allocator, "multi-io-{d}", .{arg1});
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.multi_io_func);
+    const tool = comptime initStateless(tool_descriptor, tool_impl.multi_io_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 77 } },
@@ -1012,7 +1062,7 @@ test "execute - multiple Io parameters" {
     try std.testing.expectEqualStrings("multi-io-77", result.result);
 }
 
-test "execute - inject *const Tool" {
+test "execute - inject *const Tool with wrapExecute" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var session_state = SessionState.init(allocator);
@@ -1028,10 +1078,44 @@ test "execute - inject *const Tool" {
             return try alloc.dupe(u8, tool.descriptor.name);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const vtable: Tool.VTable = .{
+        .execute = Tool.wrapExecute(desc, Impl.run),
+    };
+    const tool = Tool{
+        .descriptor = desc,
+        .vtable = &vtable,
+    };
     var res = try tool.execute(allocator, io, &session_state, "id", &.{});
     defer res.deinit();
     try std.testing.expectEqualStrings("tool_ptr_test", res.result);
+}
+
+test "execute - inject *Tool with wrapExecute" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
+
+    const desc: llm.types.Tool = .{
+        .name = "mutable_tool_ptr_test",
+        .description = "desc",
+        .parameters = &.{},
+    };
+    const Impl = struct {
+        fn run(tool: *Tool, alloc: Allocator) ![]const u8 {
+            return try alloc.dupe(u8, tool.descriptor.name);
+        }
+    };
+    const vtable: Tool.VTable = .{
+        .execute = Tool.wrapExecute(desc, Impl.run),
+    };
+    const tool = Tool{
+        .descriptor = desc,
+        .vtable = &vtable,
+    };
+    var res = try tool.execute(allocator, io, &session_state, "id", &.{});
+    defer res.deinit();
+    try std.testing.expectEqualStrings("mutable_tool_ptr_test", res.result);
 }
 
 test "execute with ToolCallContext" {
@@ -1074,7 +1158,7 @@ test "execute with ToolCallContext" {
 
     const args = [_]Argument{.{ .name = "increment", .value = .{ .integer = 5 } }};
 
-    const tool_inc = init(tool_descriptor, tool_impl.increment);
+    const tool_inc = initStateless(tool_descriptor, tool_impl.increment);
     var res1 = try tool_inc.execute(allocator, io, &session_state, "id1", &args);
     defer res1.deinit();
     try std.testing.expectEqualStrings("Count: 5", res1.result);
@@ -1083,36 +1167,10 @@ test "execute with ToolCallContext" {
     defer res2.deinit();
     try std.testing.expectEqualStrings("Count: 10", res2.result);
 
-    const tool_read = init(tool_descriptor, tool_impl.read_const);
+    const tool_read = initStateless(tool_descriptor, tool_impl.read_const);
     var res3 = try tool_read.execute(allocator, io, &session_state, "id3", &args);
     defer res3.deinit();
     try std.testing.expectEqualStrings("ConstCount: 15", res3.result);
-}
-
-test "initWithDeinit" {
-    const desc: llm.types.Tool = .{
-        .name = "deinit_test",
-        .description = "desc",
-        .parameters = &.{},
-    };
-    const Stateful = struct {
-        tool: Tool,
-        deinited: bool = false,
-
-        fn run(_: *const Tool, alloc: Allocator) ![]const u8 {
-            return try alloc.dupe(u8, "ok");
-        }
-        fn deinitTool(tool: *Tool) void {
-            const self: *@This() = @fieldParentPtr("tool", tool);
-            self.deinited = true;
-        }
-    };
-    var stateful: Stateful = .{
-        .tool = Tool.initWithDeinit(desc, Stateful.run, Stateful.deinitTool),
-    };
-    try std.testing.expect(!stateful.deinited);
-    stateful.tool.deinit();
-    try std.testing.expect(stateful.deinited);
 }
 
 test "custom VTable implementation" {
@@ -1170,7 +1228,7 @@ test "custom VTable implementation" {
     try std.testing.expect(custom.deinited);
 }
 
-test "Tool.deinit on Tool.init is safe no-op" {
+test "Tool.deinit on Tool.initStateless is safe no-op" {
     const descriptor: llm.types.Tool = .{
         .name = "test_init_deinit",
         .description = "test init deinit",
@@ -1182,6 +1240,6 @@ test "Tool.deinit on Tool.init is safe no-op" {
         }
     };
 
-    var tool = Tool.init(descriptor, tool_impl.run);
+    var tool = Tool.initStateless(descriptor, tool_impl.run);
     tool.deinit();
 }

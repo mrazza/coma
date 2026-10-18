@@ -83,20 +83,29 @@ const WeatherTool = struct {
     tool: Tool,
     weather_str: []const u8,
 
+    pub const descriptor: llm.types.Tool = .{
+        .name = "get_weather",
+        .description = "Get the current weather for a given zip code.",
+        .parameters = &.{
+            .{
+                .name = "zip_code",
+                .type = .integer,
+                .required = true,
+                .description = "The 5-digit zip code to get the weather for.",
+            },
+        },
+    };
+
+    const vtable: Tool.VTable = .{
+        .execute = Tool.wrapExecute(descriptor, getWeather),
+    };
+
     pub fn init(weather_str: []const u8) WeatherTool {
         return .{
-            .tool = Tool.init(.{
-                .name = "get_weather",
-                .description = "Get the current weather for a given zip code.",
-                .parameters = &.{
-                    .{
-                        .name = "zip_code",
-                        .type = .integer,
-                        .required = true,
-                        .description = "The 5-digit zip code to get the weather for.",
-                    },
-                },
-            }, getWeather),
+            .tool = .{
+                .descriptor = descriptor,
+                .vtable = &vtable,
+            },
             .weather_str = weather_str,
         };
     }
@@ -146,7 +155,7 @@ pub fn main(init: std.process.Init) !void {
 
     var weather_tool = WeatherTool.init("Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph");
 
-    var typescript_tool = Tool.init(.{
+    var typescript_tool = Tool.initStateless(.{
         .name = "execute_typescript",
         .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
         .parameters = &.{

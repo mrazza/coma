@@ -146,7 +146,7 @@ pub fn makeTool(
         }
     };
 
-    return agent.Tool.init(.{
+    return agent.Tool.initStateless(.{
         .name = "shell",
         .description = description,
         .parameters = &.{
