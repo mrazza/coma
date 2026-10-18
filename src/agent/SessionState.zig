@@ -242,7 +242,7 @@ test setInjectedContext {
             return "";
         }
     };
-    const tool = Tool.initStateless(tool_desc, tool_impl.run);
+    const tool = Tool.fromFn(tool_desc, tool_impl.run);
 
     try state.setInjectedContext(&tool, "System context info");
     try std.testing.expectEqualStrings("System context info", state.getInjectedContext(&tool).?);
@@ -267,7 +267,7 @@ test getInjectedContext {
             return "";
         }
     };
-    const tool = Tool.initStateless(tool_desc, tool_impl.run);
+    const tool = Tool.fromFn(tool_desc, tool_impl.run);
 
     try std.testing.expectEqual(null, state.getInjectedContext(&tool));
 
@@ -290,7 +290,7 @@ test clearInjectedContext {
             return "";
         }
     };
-    const tool = Tool.initStateless(tool_desc, tool_impl.run);
+    const tool = Tool.fromFn(tool_desc, tool_impl.run);
 
     // Clearing non-existent entry is a safe no-op
     state.clearInjectedContext(&tool);
@@ -323,7 +323,7 @@ test getInjectedContextString {
             return "";
         }
     };
-    const tool = Tool.initStateless(tool_desc, tool_impl.run);
+    const tool = Tool.fromFn(tool_desc, tool_impl.run);
 
     try state.setInjectedContext(&tool, "Use carefully.");
     const single_str = (try state.getInjectedContextString(std.testing.allocator)).?;

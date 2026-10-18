@@ -339,7 +339,7 @@ test "Session.executeTurn - executes tool call and runs again" {
         },
     };
 
-    const tool = Tool.initStateless(tool_desc, MockToolImpl.execute);
+    const tool = Tool.fromFn(tool_desc, MockToolImpl.execute);
     const tools = &[_]*const Tool{&tool};
 
     const mock_model = llm.types.Model{
@@ -518,7 +518,7 @@ test "Session.executeTurnStreaming - with tool calls" {
             },
         },
     };
-    const tool = Tool.initStateless(tool_desc, MockToolImpl.execute);
+    const tool = Tool.fromFn(tool_desc, MockToolImpl.execute);
     const tools = &[_]*const Tool{&tool};
 
     var session = try Session.init(
@@ -610,7 +610,7 @@ test "Session.executeTurn - tool call error cleanup" {
             return error.ArgumentTypeMismatch;
         }
     };
-    const tool = Tool.initStateless(tool_desc, error_tool_impl.execute);
+    const tool = Tool.fromFn(tool_desc, error_tool_impl.execute);
     const tools = &[_]*const Tool{&tool};
 
     var session = try Session.init(
@@ -676,7 +676,7 @@ test "Session.executeTurn - tool receives ToolCallContext" {
             return try std.fmt.allocPrint(alloc, "State value is {d}", .{obj.value});
         }
     };
-    const tool = Tool.initStateless(tool_desc, state_tool_impl.execute);
+    const tool = Tool.fromFn(tool_desc, state_tool_impl.execute);
     const tools = &[_]*const Tool{&tool};
 
     var session = try Session.init(
@@ -756,7 +756,7 @@ test "Session.executeTurn prepends injected context from session_state" {
             return "";
         }
     };
-    const tool = Tool.initStateless(tool_desc, tool_impl.run);
+    const tool = Tool.fromFn(tool_desc, tool_impl.run);
 
     var session = try Session.init(allocator, io, prov, .{
         .model = .{ .id = "mock-model", .display_name = "Mock Model" },
@@ -802,7 +802,7 @@ test "Session.executeTurn prepends injected context added during tool execution"
         }
     };
 
-    const tool = Tool.initStateless(dummy_tool_desc, ContextToolImpl.run);
+    const tool = Tool.fromFn(dummy_tool_desc, ContextToolImpl.run);
     const tools = &[_]*const Tool{&tool};
 
     var session: Session = try .init(

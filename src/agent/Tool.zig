@@ -87,7 +87,7 @@ pub fn wrapExecute(comptime descriptor: llm.types.Tool, comptime execute_fn: any
     };
 }
 
-/// Creates a stateless Tool from a descriptor and a function.
+/// Creates a Tool from a descriptor and a standalone function.
 /// Tool calls will delegate to the provided function when called.
 ///
 /// `descriptor` is the tool's descriptor defining the structure of the tool for the LLM.
@@ -100,17 +100,17 @@ pub fn wrapExecute(comptime descriptor: llm.types.Tool, comptime execute_fn: any
 ///
 /// Additionally, the function can optionally accept an Io struct which represents the IO to use
 /// during the tool call and/or a ToolCallContext struct.
-/// The function MUST NOT accept a `*const Tool` or `*Tool` parameter. For stateful tools,
-/// define a custom struct embedding `tool: Tool`, use `Tool.wrapExecute` in a `Tool.VTable`,
+/// The function MUST NOT accept a `*const Tool` or `*Tool` parameter. For tools with tool-level
+/// state, define a custom struct embedding `tool: Tool`, use `Tool.wrapExecute` in a `Tool.VTable`,
 /// and use `@fieldParentPtr`.
 /// The function MUST be thread-safe as multiple calls to the tool function can occur in parallel.
 ///
 /// The `execute_fn` should return the result of the tool call as a string and transfer
 /// ownership of the memory to the caller. The result will be passed to the LLM as the
 /// result of the tool call.
-pub fn initStateless(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
+pub fn fromFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
     if (comptime takesToolParam(@TypeOf(execute_fn))) {
-        @compileError("Stateless tool function '" ++ descriptor.name ++ "' cannot take a *Tool parameter. Construct a Tool with a VTable and Tool.wrapExecute instead.");
+        @compileError("Tool.fromFn function '" ++ descriptor.name ++ "' cannot take a *Tool parameter. Construct a Tool with a VTable and Tool.wrapExecute instead.");
     }
 
     return comptime blk: {
@@ -332,7 +332,7 @@ test takesToolParam {
     try std.testing.expect(!takesToolParam(@TypeOf(S.fStateless)));
 }
 
-test initStateless {
+test fromFn {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var session_state = SessionState.init(allocator);
@@ -361,7 +361,7 @@ test initStateless {
             return try std.fmt.allocPrint(allocator, "{d}{s}", .{ arg1, arg2 });
         }
     };
-    const tool = comptime initStateless(tool_descriptor, tool_impl.example_function);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.example_function);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 12 } },
@@ -648,7 +648,7 @@ test execute {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.initStateless(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "arg1",
@@ -686,7 +686,7 @@ test "execute - unknown argument" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.initStateless(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "unknown",
@@ -719,7 +719,7 @@ test "execute - extra argument ignored" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.initStateless(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "arg1",
@@ -758,7 +758,7 @@ test "execute - missing required argument" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.initStateless(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{};
     try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, io, &session_state, "id", args));
 }
@@ -787,7 +787,7 @@ test "execute - missing optional argument" {
             return allocator.dupe(u8, "default");
         }
     };
-    const tool = Tool.initStateless(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{};
     var result = try tool.execute(testing_allocator, io, &session_state, "id", args);
     defer result.deinit();
@@ -821,7 +821,7 @@ test "execute - optional argument provided" {
             return allocator.dupe(u8, "default");
         }
     };
-    const tool = Tool.initStateless(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{ .name = "arg1", .value = .{ .string = "provided" } },
     };
@@ -856,7 +856,7 @@ test "execute - argument type mismatch" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.initStateless(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "arg1",
@@ -889,7 +889,7 @@ test "execute - no Allocator parameter" {
             return allocator.dupe(u8, arg1);
         }
     };
-    const tool = comptime initStateless(tool_descriptor, tool_impl.no_allocator_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.no_allocator_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .string = "hello" } },
@@ -932,7 +932,7 @@ test "execute - Allocator as middle/last parameter" {
             return try std.fmt.allocPrint(tool_allocator, "middle-{d}-{s}", .{ arg1, arg2 });
         }
     };
-    const tool = comptime initStateless(tool_descriptor, tool_impl.middle_last_allocator_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.middle_last_allocator_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 99 } },
@@ -971,7 +971,7 @@ test "execute - multiple Allocator parameters" {
             return try std.fmt.allocPrint(alloc1, "multi-{d}", .{arg1});
         }
     };
-    const tool = comptime initStateless(tool_descriptor, tool_impl.multi_allocator_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.multi_allocator_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 7 } },
@@ -1009,7 +1009,7 @@ test "execute - Io parameter" {
             return try std.fmt.allocPrint(tool_allocator, "io-{s}", .{arg1});
         }
     };
-    const tool = comptime initStateless(tool_descriptor, tool_impl.io_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.io_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .string = "test" } },
@@ -1048,7 +1048,7 @@ test "execute - multiple Io parameters" {
             return try std.fmt.allocPrint(tool_allocator, "multi-io-{d}", .{arg1});
         }
     };
-    const tool = comptime initStateless(tool_descriptor, tool_impl.multi_io_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.multi_io_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 77 } },
@@ -1158,7 +1158,7 @@ test "execute with ToolCallContext" {
 
     const args = [_]Argument{.{ .name = "increment", .value = .{ .integer = 5 } }};
 
-    const tool_inc = initStateless(tool_descriptor, tool_impl.increment);
+    const tool_inc = fromFn(tool_descriptor, tool_impl.increment);
     var res1 = try tool_inc.execute(allocator, io, &session_state, "id1", &args);
     defer res1.deinit();
     try std.testing.expectEqualStrings("Count: 5", res1.result);
@@ -1167,7 +1167,7 @@ test "execute with ToolCallContext" {
     defer res2.deinit();
     try std.testing.expectEqualStrings("Count: 10", res2.result);
 
-    const tool_read = initStateless(tool_descriptor, tool_impl.read_const);
+    const tool_read = fromFn(tool_descriptor, tool_impl.read_const);
     var res3 = try tool_read.execute(allocator, io, &session_state, "id3", &args);
     defer res3.deinit();
     try std.testing.expectEqualStrings("ConstCount: 15", res3.result);
@@ -1228,7 +1228,7 @@ test "custom VTable implementation" {
     try std.testing.expect(custom.deinited);
 }
 
-test "Tool.deinit on Tool.initStateless is safe no-op" {
+test "Tool.deinit on Tool.fromFn is safe no-op" {
     const descriptor: llm.types.Tool = .{
         .name = "test_init_deinit",
         .description = "test init deinit",
@@ -1240,6 +1240,6 @@ test "Tool.deinit on Tool.initStateless is safe no-op" {
         }
     };
 
-    var tool = Tool.initStateless(descriptor, tool_impl.run);
+    var tool = Tool.fromFn(descriptor, tool_impl.run);
     tool.deinit();
 }
