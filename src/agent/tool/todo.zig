@@ -16,7 +16,8 @@ pub const Tool = agent.Tool.init(.{
     \\  - Task tracking and progress updates
     \\  - Important notes and reminders
     \\
-    \\Writing an empty string clears the entire todo list.
+    \\Writing an empty string clears the entire todo list. Consider clearing
+    \\the todo list when starting a new task.
     \\
     \\WARNING: This operation completely replaces the existing content.
     \\Always include all content you want to keep, not just the changes.
