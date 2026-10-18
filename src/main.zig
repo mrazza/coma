@@ -79,17 +79,37 @@ fn executeTypescript(allocator: std.mem.Allocator, io: std.Io, code: []const u8)
     return result.stdout;
 }
 
-fn getWeather(allocator: std.mem.Allocator, zip_code: i64, ctx: *WeatherToolCtx) ![]const u8 {
-    const result_str = if (zip_code == 7302)
-        try allocator.dupe(u8, ctx.weather_str)
-    else
-        try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip_code});
-
-    return result_str;
-}
-
-const WeatherToolCtx = struct {
+const WeatherTool = struct {
+    tool: Tool,
     weather_str: []const u8,
+
+    pub fn init(weather_str: []const u8) WeatherTool {
+        return .{
+            .tool = Tool.init(.{
+                .name = "get_weather",
+                .description = "Get the current weather for a given zip code.",
+                .parameters = &.{
+                    .{
+                        .name = "zip_code",
+                        .type = .integer,
+                        .required = true,
+                        .description = "The 5-digit zip code to get the weather for.",
+                    },
+                },
+            }, getWeather),
+            .weather_str = weather_str,
+        };
+    }
+
+    fn getWeather(tool: *const Tool, allocator: std.mem.Allocator, zip_code: i64) ![]const u8 {
+        const self: *const WeatherTool = @fieldParentPtr("tool", tool);
+        const result_str = if (zip_code == 7302)
+            try allocator.dupe(u8, self.weather_str)
+        else
+            try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip_code});
+
+        return result_str;
+    }
 };
 
 /// The main entry point of the application.
@@ -124,36 +144,28 @@ pub fn main(init: std.process.Init) !void {
         }
     } else unreachable;
 
-    var weather_ctx: WeatherToolCtx = .{ .weather_str = "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph" };
+    var weather_tool = WeatherTool.init("Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph");
 
-    var tools = [_]Tool{
-        Tool.init(.{
-            .name = "execute_typescript",
-            .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
-            .parameters = &.{
-                .{
-                    .name = "code",
-                    .type = .string,
-                    .required = true,
-                    .description = "The typescript code to execute.",
-                },
+    var typescript_tool = Tool.init(.{
+        .name = "execute_typescript",
+        .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
+        .parameters = &.{
+            .{
+                .name = "code",
+                .type = .string,
+                .required = true,
+                .description = "The typescript code to execute.",
             },
-        }, executeTypescript),
-        Tool.initWithContext(.{
-            .name = "get_weather",
-            .description = "Get the current weather for a given zip code.",
-            .parameters = &.{
-                .{
-                    .name = "zip_code",
-                    .type = .integer,
-                    .required = true,
-                    .description = "The 5-digit zip code to get the weather for.",
-                },
-            },
-        }, getWeather, &weather_ctx, null),
-        agent.Tool.BuiltIn.Todo,
+        },
+    }, executeTypescript);
+
+    const tools = [_]*const Tool{
+        &typescript_tool,
+        &weather_tool.tool,
+        &agent.Tool.BuiltIn.Todo,
     };
-    defer for (&tools) |*tool| tool.deinit();
+    defer typescript_tool.deinit();
+    defer weather_tool.tool.deinit();
 
     const session_config: types.SessionConfig = .{ .model = selected_model.?, .tools = &tools, .system_prompt = "You're a helpful agent. The user can ask you questions and you can use your tools to answer them. When receiving a new request from the user, plan out how you will address the request and document the steps on your Todo list. Keep the todo list updated as you progress." };
 

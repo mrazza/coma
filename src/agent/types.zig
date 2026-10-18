@@ -9,7 +9,7 @@ pub const SessionConfig = struct {
     /// The LLM model to be used by the Session.
     model: llm.types.Model,
     /// A list of executable tools available for the Session to use.
-    tools: []const Tool = &.{},
+    tools: []const *const Tool = &.{},
     /// Optional system prompt for the Session.
     system_prompt: ?[]const u8 = null,
 };
@@ -27,14 +27,14 @@ pub const Turn = struct {
 /// the model.
 pub const IntermediateStepResult = union(enum) {
     /// The result of an LLM generation step.
-    step_result: llm.types.StepResult,
+    step_result: *llm.types.StepResult,
     /// The result of executing a tool call requested by the model.
     tool_result: llm.types.ToolResult,
 
     /// Frees the resources associated with the intermediate step result.
     pub fn deinit(self: *IntermediateStepResult) void {
         switch (self.*) {
-            .step_result => |*step_result| step_result.deinit(),
+            .step_result => |step_result| step_result.deinit(),
             .tool_result => |*tool_result| tool_result.deinit(),
         }
         self.* = undefined;
@@ -49,7 +49,7 @@ pub const TurnResult = struct {
     /// The history of intermediate steps (model thoughts, tool calls, and results) executed during the turn.
     intermediate_steps: []IntermediateStepResult,
     /// The final step result that completed the turn (typically the model's final text output).
-    final_step: llm.types.StepResult,
+    final_step: *llm.types.StepResult,
 
     /// Deinitializes the TurnResult and frees all associated memory.
     ///

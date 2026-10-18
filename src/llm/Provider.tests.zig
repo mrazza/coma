@@ -39,7 +39,7 @@ test "Provider.executeStep delegates to VTable" {
     try std.testing.expectEqual(allocator, mock_impl.last_allocator.?);
     try std.testing.expectEqualStrings("test-model-id", mock_impl.last_session_config.?.model.id);
     try std.testing.expectEqualStrings("hello", mock_impl.last_input_steps.?[0].prompt);
-    try std.testing.expectEqual(last_step_continuation.ptr, mock_impl.last_previous_step.?.ptr);
+    try std.testing.expectEqual(last_step_continuation, mock_impl.last_previous_step.?);
 }
 
 test "Provider.deinit delegates to VTable" {
@@ -59,7 +59,8 @@ test "Provider.listModels returns custom success and error" {
         const dummy_models = &[_]llm.types.Model{
             .{ .id = "custom-id", .display_name = "Custom Name" },
         };
-        mock_impl.list_models_result = testing.MockProvider.listModelsResult(dummy_models);
+        var expected_result = testing.MockProvider.listModelsResult(dummy_models);
+        mock_impl.list_models_result = &expected_result;
 
         var prov = mock_impl.provider();
         var result = try prov.listModels(allocator);
@@ -90,10 +91,10 @@ test "Provider.executeStep returns custom success and error" {
         const dummy_outputs = &[_]llm.types.ModelOutput{
             .{ .text = "custom-output" },
         };
-        const step_result = testing.MockProvider.stepResult(dummy_outputs, &.{}, &.{});
+        var step_result = testing.MockProvider.stepResult(dummy_outputs, &.{}, &.{});
         const step_continuation = testing.MockProvider.stepContinuation();
         const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-            .{ .result = step_result, .continuation = step_continuation },
+            .{ .result = &step_result, .continuation = step_continuation },
         };
         mock_impl.execute_step_results = &outcomes;
 
@@ -152,7 +153,7 @@ test "Provider.executeStepStreaming delegates to VTable" {
     try std.testing.expectEqual(allocator, mock_impl.last_allocator.?);
     try std.testing.expectEqualStrings("test-model-id", mock_impl.last_session_config.?.model.id);
     try std.testing.expectEqualStrings("hello", mock_impl.last_input_steps.?[0].prompt);
-    try std.testing.expectEqual(prev_continuation.ptr, mock_impl.last_previous_step.?.ptr);
+    try std.testing.expectEqual(prev_continuation, mock_impl.last_previous_step.?);
 }
 
 test "Provider.executeStepStreaming returns custom success and error" {
@@ -173,10 +174,10 @@ test "Provider.executeStepStreaming returns custom success and error" {
         const dummy_outputs = &[_]llm.types.ModelOutput{
             .{ .text = "custom-output" },
         };
-        const step_result = testing.MockProvider.stepResult(dummy_outputs, &.{}, &.{});
+        var step_result = testing.MockProvider.stepResult(dummy_outputs, &.{}, &.{});
         const step_continuation = testing.MockProvider.stepContinuation();
         const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-            .{ .result = step_result, .continuation = step_continuation },
+            .{ .result = &step_result, .continuation = step_continuation },
         };
         mock_impl.execute_step_results = &outcomes;
 

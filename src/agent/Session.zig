@@ -19,10 +19,10 @@ const Session = @This();
 
 allocator: Allocator,
 io: Io,
-provider: Provider,
-tools: []const Tool,
+provider: *Provider,
+tools: []const *const Tool,
 session_config: llm.types.SessionConfig,
-prev_continuation: ?llm.types.StepContinuation,
+prev_continuation: ?*llm.types.StepContinuation,
 session_state: SessionState,
 turn_mutex: Io.Mutex,
 
@@ -35,7 +35,7 @@ pub const SessionError = error{TurnAlreadyRunning} || ToolError || Provider.Prov
 /// `io` is the I/O context to use for operations.
 /// `provider` is a Provider interface implementation that determines the LLM provider to use.
 /// `config` contains the configuration for the Session.
-pub fn init(allocator: Allocator, io: Io, provider: Provider, config: types.SessionConfig) !Session {
+pub fn init(allocator: Allocator, io: Io, provider: *Provider, config: types.SessionConfig) !Session {
     const descriptors = try allocator.alloc(llm.types.Tool, config.tools.len);
     errdefer allocator.free(descriptors);
     for (config.tools, 0..) |tool, i| {
@@ -60,7 +60,7 @@ pub fn init(allocator: Allocator, io: Io, provider: Provider, config: types.Sess
 
 /// Deinitializes the Session, releasing any accumulated session history and internal resources.
 pub fn deinit(self: *Session) void {
-    if (self.prev_continuation) |*ls| {
+    if (self.prev_continuation) |ls| {
         ls.deinit();
         self.prev_continuation = null;
     }
@@ -112,7 +112,7 @@ fn streamingCallbackProxy(ctx: ?*anyopaque, chunk: llm.types.StreamingChunk) voi
 }
 
 fn executeToolCall(self: *Session, tool_call: llm.types.ToolCall) ToolError!llm.types.ToolResult {
-    const tool = for (self.tools) |*t| {
+    const tool = for (self.tools) |t| {
         if (std.mem.eql(u8, t.descriptor.name, tool_call.name)) {
             break t;
         }
@@ -175,7 +175,7 @@ fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*Str
         var step_result = step_outcome.result;
         const step_continuation = step_outcome.continuation;
 
-        if (self.prev_continuation) |*old_continuation| old_continuation.deinit();
+        if (self.prev_continuation) |old_continuation| old_continuation.deinit();
         self.prev_continuation = step_continuation;
 
         if (step_result.tool_calls.len > 0) {
@@ -224,6 +224,7 @@ fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*Str
 }
 
 const testing = @import("testing");
+const BlockingTool = @import("testing/BlockingTool.zig");
 
 const MockToolImpl = struct {
     pub fn execute(allocator: std.mem.Allocator, val: i64) ![]const u8 {
@@ -249,9 +250,9 @@ test "Session.executeTurn - no tool calls" {
     });
     defer session.deinit();
 
-    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello user!" }}, &.{}, &.{});
+    var step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello user!" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -288,9 +289,9 @@ test "Session.executeTurnStreaming - no tool calls" {
     );
     defer session.deinit();
 
-    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello user!" }}, &.{}, &.{});
+    var step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello user!" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -339,7 +340,7 @@ test "Session.executeTurn - executes tool call and runs again" {
     };
 
     const tool = Tool.init(tool_desc, MockToolImpl.execute);
-    const tools = &[_]Tool{tool};
+    const tools = &[_]*const Tool{&tool};
 
     const mock_model = llm.types.Model{
         .id = "mock-model",
@@ -368,18 +369,18 @@ test "Session.executeTurn - executes tool call and runs again" {
         },
     };
 
-    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    var result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
     const continuation1 = testing.MockProvider.stepContinuation();
 
     const final_outputs = [_]llm.types.ModelOutput{
         .{ .text = "Final output after tool" },
     };
-    const result2 = testing.MockProvider.stepResult(&final_outputs, &.{}, &.{});
+    var result2 = testing.MockProvider.stepResult(&final_outputs, &.{}, &.{});
     const continuation2 = testing.MockProvider.stepContinuation();
 
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        llm.types.StepOutcome{ .result = result1, .continuation = continuation1 },
-        llm.types.StepOutcome{ .result = result2, .continuation = continuation2 },
+        llm.types.StepOutcome{ .result = &result1, .continuation = continuation1 },
+        llm.types.StepOutcome{ .result = &result2, .continuation = continuation2 },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -440,9 +441,9 @@ test "Session.executeTurnStreaming - model chunks streaming" {
     const chunks_list = [_][]const llm.types.StreamingChunk{&chunks};
     mock_provider.execute_step_streaming_chunks = &chunks_list;
 
-    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello world!" }}, &.{}, &.{});
+    var step_result = testing.MockProvider.stepResult(&.{.{ .text = "Hello world!" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -497,11 +498,11 @@ test "Session.executeTurnStreaming - with tool calls" {
         },
     };
 
-    const step_result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls_buf);
-    const step_result2 = testing.MockProvider.stepResult(&.{.{ .text = "Tool executed!" }}, &.{}, &.{});
+    var step_result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls_buf);
+    var step_result2 = testing.MockProvider.stepResult(&.{.{ .text = "Tool executed!" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = step_result1, .continuation = testing.MockProvider.stepContinuation() },
-        .{ .result = step_result2, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result2, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -518,7 +519,7 @@ test "Session.executeTurnStreaming - with tool calls" {
         },
     };
     const tool = Tool.init(tool_desc, MockToolImpl.execute);
-    const tools = &[_]Tool{tool};
+    const tools = &[_]*const Tool{&tool};
 
     var session = try Session.init(
         allocator,
@@ -610,7 +611,7 @@ test "Session.executeTurn - tool call error cleanup" {
         }
     };
     const tool = Tool.init(tool_desc, error_tool_impl.execute);
-    const tools = &[_]Tool{tool};
+    const tools = &[_]*const Tool{&tool};
 
     var session = try Session.init(
         allocator,
@@ -630,10 +631,10 @@ test "Session.executeTurn - tool call error cleanup" {
             .arguments = &.{},
         },
     };
-    const step_result = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    var step_result = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
     const step_continuation = testing.MockProvider.stepContinuation();
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = step_result, .continuation = step_continuation },
+        .{ .result = &step_result, .continuation = step_continuation },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -676,7 +677,7 @@ test "Session.executeTurn - tool receives ToolCallContext" {
         }
     };
     const tool = Tool.init(tool_desc, state_tool_impl.execute);
-    const tools = &[_]Tool{tool};
+    const tools = &[_]*const Tool{&tool};
 
     var session = try Session.init(
         allocator,
@@ -700,11 +701,11 @@ test "Session.executeTurn - tool receives ToolCallContext" {
         },
     };
 
-    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
-    const result2 = testing.MockProvider.stepResult(&.{.{ .text = "Done" }}, &.{}, &.{});
+    var result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    var result2 = testing.MockProvider.stepResult(&.{.{ .text = "Done" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = result1, .continuation = testing.MockProvider.stepContinuation() },
-        .{ .result = result2, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &result2, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -759,15 +760,15 @@ test "Session.executeTurn prepends injected context from session_state" {
 
     var session = try Session.init(allocator, io, prov, .{
         .model = .{ .id = "mock-model", .display_name = "Mock Model" },
-        .tools = &.{tool},
+        .tools = &.{&tool},
     });
     defer session.deinit();
 
-    try session.session_state.setInjectedContext(&session.tools[0], "Injected tool info");
+    try session.session_state.setInjectedContext(session.tools[0], "Injected tool info");
 
-    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Response text" }}, &.{}, &.{});
+    var step_result = testing.MockProvider.stepResult(&.{.{ .text = "Response text" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -802,7 +803,7 @@ test "Session.executeTurn prepends injected context added during tool execution"
     };
 
     const tool = Tool.init(dummy_tool_desc, ContextToolImpl.run);
-    const tools = &[_]Tool{tool};
+    const tools = &[_]*const Tool{&tool};
 
     var session: Session = try .init(
         allocator,
@@ -823,13 +824,13 @@ test "Session.executeTurn prepends injected context added during tool execution"
         },
     };
 
-    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
-    const result2 = testing.MockProvider.stepResult(&.{.{ .text = "Final turn output" }}, &.{}, &.{});
-    const result3 = testing.MockProvider.stepResult(&.{.{ .text = "Second turn output" }}, &.{}, &.{});
+    var result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    var result2 = testing.MockProvider.stepResult(&.{.{ .text = "Final turn output" }}, &.{}, &.{});
+    var result3 = testing.MockProvider.stepResult(&.{.{ .text = "Second turn output" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = result1, .continuation = testing.MockProvider.stepContinuation() },
-        .{ .result = result2, .continuation = testing.MockProvider.stepContinuation() },
-        .{ .result = result3, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &result2, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &result3, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -859,8 +860,7 @@ test "Session.executeTurn - error.TurnAlreadyRunning when turn is in progress" {
     defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
-    var blocking_tool = testing.BlockingTool.init(io);
-    const tool = blocking_tool.toolWithContext(Tool);
+    var blocking_tool = BlockingTool.init(io);
 
     var session = try Session.init(
         allocator,
@@ -868,7 +868,7 @@ test "Session.executeTurn - error.TurnAlreadyRunning when turn is in progress" {
         prov,
         .{
             .model = .{ .id = "mock-model", .display_name = "Mock Model" },
-            .tools = &.{tool},
+            .tools = &.{&blocking_tool.tool},
         },
     );
     defer session.deinit();
@@ -876,15 +876,15 @@ test "Session.executeTurn - error.TurnAlreadyRunning when turn is in progress" {
     const tool_calls = [_]llm.types.ToolCall{
         .{
             .id = "call-blocking-1",
-            .name = testing.BlockingTool.descriptor.name,
+            .name = BlockingTool.descriptor.name,
             .arguments = &.{},
         },
     };
-    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
-    const result2 = testing.MockProvider.stepResult(&.{.{ .text = "Finished blocking turn" }}, &.{}, &.{});
+    var result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    var result2 = testing.MockProvider.stepResult(&.{.{ .text = "Finished blocking turn" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = result1, .continuation = testing.MockProvider.stepContinuation() },
-        .{ .result = result2, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &result2, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -928,8 +928,7 @@ test "Session.executeTurnStreaming - error.TurnAlreadyRunning when turn is in pr
     defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
-    var blocking_tool = testing.BlockingTool.init(io);
-    const tool = blocking_tool.toolWithContext(Tool);
+    var blocking_tool = BlockingTool.init(io);
 
     var session = try Session.init(
         allocator,
@@ -937,7 +936,7 @@ test "Session.executeTurnStreaming - error.TurnAlreadyRunning when turn is in pr
         prov,
         .{
             .model = .{ .id = "mock-model", .display_name = "Mock Model" },
-            .tools = &.{tool},
+            .tools = &.{&blocking_tool.tool},
         },
     );
     defer session.deinit();
@@ -945,15 +944,15 @@ test "Session.executeTurnStreaming - error.TurnAlreadyRunning when turn is in pr
     const tool_calls = [_]llm.types.ToolCall{
         .{
             .id = "call-blocking-1",
-            .name = testing.BlockingTool.descriptor.name,
+            .name = BlockingTool.descriptor.name,
             .arguments = &.{},
         },
     };
-    const result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
-    const result2 = testing.MockProvider.stepResult(&.{.{ .text = "Finished blocking turn" }}, &.{}, &.{});
+    var result1 = testing.MockProvider.stepResult(&.{}, &.{}, &tool_calls);
+    var result2 = testing.MockProvider.stepResult(&.{.{ .text = "Finished blocking turn" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = result1, .continuation = testing.MockProvider.stepContinuation() },
-        .{ .result = result2, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &result2, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
@@ -1012,12 +1011,12 @@ test "Session.executeTurn - sequential turns execute successfully" {
     );
     defer session.deinit();
 
-    const step_result1 = testing.MockProvider.stepResult(&.{.{ .text = "Turn 1 output" }}, &.{}, &.{});
-    const step_result2 = testing.MockProvider.stepResult(&.{.{ .text = "Turn 2 output" }}, &.{}, &.{});
+    var step_result1 = testing.MockProvider.stepResult(&.{.{ .text = "Turn 1 output" }}, &.{}, &.{});
+    var step_result2 = testing.MockProvider.stepResult(&.{.{ .text = "Turn 2 output" }}, &.{}, &.{});
 
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = step_result1, .continuation = testing.MockProvider.stepContinuation() },
-        .{ .result = step_result2, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result1, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result2, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 
