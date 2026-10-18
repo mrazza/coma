@@ -126,7 +126,7 @@ pub fn main(init: std.process.Init) !void {
 
     var weather_ctx: WeatherToolCtx = .{ .weather_str = "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph" };
 
-    const tools = &[_]Tool{
+    var tools = [_]Tool{
         Tool.init(.{
             .name = "execute_typescript",
             .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
@@ -150,11 +150,12 @@ pub fn main(init: std.process.Init) !void {
                     .description = "The 5-digit zip code to get the weather for.",
                 },
             },
-        }, getWeather, &weather_ctx),
+        }, getWeather, &weather_ctx, null),
         agent.Tool.BuiltIn.Todo,
     };
+    defer for (&tools) |*tool| tool.deinit();
 
-    const session_config: types.SessionConfig = .{ .model = selected_model.?, .tools = tools, .system_prompt = "You're a helpful agent. The user can ask you questions and you can use your tools to answer them. When receiving a new request from the user, plan out how you will address the request and document the steps on your Todo list. Keep the todo list updated as you progress." };
+    const session_config: types.SessionConfig = .{ .model = selected_model.?, .tools = &tools, .system_prompt = "You're a helpful agent. The user can ask you questions and you can use your tools to answer them. When receiving a new request from the user, plan out how you will address the request and document the steps on your Todo list. Keep the todo list updated as you progress." };
 
     const args = try init.minimal.args.toSlice(allocator);
     defer allocator.free(args);
