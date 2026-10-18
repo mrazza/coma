@@ -24,7 +24,7 @@ pub fn init(io: Io) BlockingTool {
 
 /// Creates an agent Tool instance bound to this BlockingTool context.
 pub fn toolWithContext(self: *BlockingTool, comptime Tool: type) Tool {
-    return Tool.initWithContext(descriptor, execute, self);
+    return Tool.initWithContext(descriptor, execute, self, null);
 }
 
 /// Execution function compatible with agent.Tool.initWithContext.
