@@ -15,6 +15,10 @@ pub const descriptor: llm.types.Tool = .{
     .parameters = &.{},
 };
 
+const vtable: Tool.VTable = .{
+    .execute = Tool.wrapExecute(descriptor, execute),
+};
+
 tool: Tool,
 started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 should_stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -22,7 +26,10 @@ io: Io,
 
 pub fn init(io: Io) BlockingTool {
     return .{
-        .tool = Tool.init(descriptor, execute),
+        .tool = .{
+            .descriptor = descriptor,
+            .vtable = &vtable,
+        },
         .io = io,
     };
 }

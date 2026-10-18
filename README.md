@@ -14,7 +14,7 @@ Sure, writing LLM agent loops is a solved problem and it's completely unnecessar
 
 - **Type-safe Comptime Tool Registration**: Register standard Zig functions as agent tools. The compiler checks that your function parameters match the tool's descriptor structure using Zig's compile-time reflection.
 - **ACP Server Integration**: Built-in JSON-RPC stdio server supporting the Agent Connection Protocol (ACP) for external client/IDE integration (`--acp`).
-- **Context-Aware Tools & State Management**: Support for custom user-data contexts (`Tool.initWithContext`), session state tracking, and dynamic context injections across turns.
+- **Context-Aware Tools & State Management**: Support for stateful tools with intrusive VTables (`Tool.wrapExecute`), session state tracking, and dynamic context injections across turns.
 - **Built-in Agent Tools**: Standardized built-in tools (such as `agent.Tool.BuiltIn.Todo` for planning and tracking multi-step execution).
 - **Incremental Streaming & Response Accumulator**: Built-in support for streaming model responses chunk-by-chunk with ANSI terminal markdown formatting.
 - **Asynchronous & Concurrent Tool Execution**: Built on top of Zig's native non-blocking I/O event loop (`std.Io`). Tools run concurrently via `Io.Select`.
@@ -32,7 +32,7 @@ fn getWeather(allocator: std.mem.Allocator, zip_code: i64) ![]const u8 {
 }
 
 // Register it with the Agent
-const weather_tool = Tool.init(.{
+const weather_tool = Tool.initStateless(.{
     .name = "get_weather",
     .description = "Get the current weather for a given zip code.",
     .parameters = &.{
@@ -46,7 +46,7 @@ const weather_tool = Tool.init(.{
 }, getWeather);
 ```
 
-You can also attach custom context to tools using `Tool.initWithContext` or include built-in tools like `agent.Tool.BuiltIn.Todo`.
+You can also create stateful tools using `Tool.wrapExecute` and `Tool.VTable` or include built-in tools like `agent.Tool.BuiltIn.Todo`.
 
 ## Library Usage
 
