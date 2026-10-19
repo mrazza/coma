@@ -107,7 +107,7 @@ fn MakeProvider(comptime ClientType: type) type {
         ///
         /// Returns the structured URI and `CreateInteractionRequest` payload.
         fn buildCreateInteractionRequest(
-            self: *Self,
+            self: *const Self,
             arena_allocator: Allocator,
             session_config: llm.types.SessionConfig,
             input: []const llm.types.Step,
@@ -116,12 +116,13 @@ fn MakeProvider(comptime ClientType: type) type {
         ) !struct { uri: std.Uri, payload: api.CreateInteractionRequest } {
             const previous_gemini_step: ?*const gemini_types.StepContinuation = if (previous_step) |step| @fieldParentPtr("interface", step) else null;
 
-            var tools: []api.Tool = &.{};
+            var tools: []const api.Tool = &.{};
             if (session_config.tools.len > 0) {
-                tools = try arena_allocator.alloc(api.Tool, session_config.tools.len);
+                const tools_buf = try arena_allocator.alloc(api.Tool, session_config.tools.len);
                 for (session_config.tools, 0..) |tool, i| {
-                    tools[i] = try converter.toGoogleTool(arena_allocator, tool);
+                    tools_buf[i] = try converter.toGoogleTool(arena_allocator, tool);
                 }
+                tools = tools_buf;
             }
 
             const str_uri = try makeUri(arena_allocator, .{ .path = &.{"interactions"}, .api_key = self.api_key });

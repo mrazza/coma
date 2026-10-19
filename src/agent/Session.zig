@@ -365,7 +365,7 @@ test "Session.executeTurn - executes tool call and runs again" {
         .{
             .id = "call-id-123",
             .name = "mock_tool",
-            .arguments = @constCast(&args),
+            .arguments = &args,
         },
     };
 
@@ -494,7 +494,7 @@ test "Session.executeTurnStreaming - with tool calls" {
         .{
             .id = "call-id-123",
             .name = "mock_tool",
-            .arguments = @constCast(&args_buf),
+            .arguments = &args_buf,
         },
     };
 
@@ -697,7 +697,7 @@ test "Session.executeTurn - tool receives ToolCallContext" {
         .{
             .id = "call-id-123",
             .name = "state_tool",
-            .arguments = @constCast(&args),
+            .arguments = &args,
         },
     };
 
