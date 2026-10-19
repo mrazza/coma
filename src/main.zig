@@ -139,10 +139,10 @@ pub fn main(init: std.process.Init) !void {
     var http_client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer http_client.deinit();
     var gemini_client: provider.Gemini = try .init(allocator, &http_client, api_key);
-    var client = gemini_client.provider();
+    const client = gemini_client.provider();
     defer client.deinit();
 
-    var models_list = try client.listModels(allocator);
+    const models_list = try client.listModels(allocator);
     defer models_list.deinit();
     const models = models_list.models;
     var selected_model: ?llm.types.Model = null;

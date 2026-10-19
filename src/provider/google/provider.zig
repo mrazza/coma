@@ -380,7 +380,7 @@ test "Gemini initialization and deinitialization" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     p.deinit();
 }
 
@@ -417,10 +417,10 @@ test "Gemini.listModels success" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
-    var result = try p.listModels(allocator);
+    const result = try p.listModels(allocator);
     defer result.deinit();
 
     try std.testing.expectEqual(1, result.models.len);
@@ -447,7 +447,7 @@ test "Gemini.listModels HTTP failure" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     try std.testing.expectError(error.HttpRequestFailed, p.listModels(allocator));
@@ -503,7 +503,7 @@ test "Gemini.executeStep success" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     const config = llm.types.SessionConfig{
@@ -513,7 +513,7 @@ test "Gemini.executeStep success" {
         .{ .prompt = "Hello" },
     };
 
-    var outcome = try p.executeStep(allocator, config, input, null);
+    const outcome = try p.executeStep(allocator, config, input, null);
     defer outcome.result.deinit();
     defer outcome.continuation.deinit();
     const result = outcome.result;
@@ -524,7 +524,7 @@ test "Gemini.executeStep success" {
     try std.testing.expectEqual(1, result.thoughts.len);
     try std.testing.expectEqualStrings("Thinking...", result.thoughts[0].text);
 
-    const gemini_continuation: *gemini_types.StepContinuation = @fieldParentPtr("interface", continuation);
+    const gemini_continuation: *const gemini_types.StepContinuation = @fieldParentPtr("interface", continuation);
     try std.testing.expectEqualStrings("interaction_123", gemini_continuation.interaction_id);
     try std.testing.expectEqual(1, call_counts[0]);
 }
@@ -598,7 +598,7 @@ test "Gemini.executeStep with previous step" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     const config = llm.types.SessionConfig{
@@ -609,7 +609,7 @@ test "Gemini.executeStep with previous step" {
     const input1 = &[_]llm.types.Step{
         .{ .prompt = "Hello" },
     };
-    var outcome1 = try p.executeStep(allocator, config, input1, null);
+    const outcome1 = try p.executeStep(allocator, config, input1, null);
     defer outcome1.result.deinit();
     defer outcome1.continuation.deinit();
     const result1 = outcome1.result;
@@ -621,7 +621,7 @@ test "Gemini.executeStep with previous step" {
     const input2 = &[_]llm.types.Step{
         .{ .prompt = "Next prompt" },
     };
-    var outcome2 = try p.executeStep(allocator, config, input2, continuation1);
+    const outcome2 = try p.executeStep(allocator, config, input2, continuation1);
     defer outcome2.result.deinit();
     defer outcome2.continuation.deinit();
     const result2 = outcome2.result;
@@ -672,7 +672,7 @@ test "Gemini.executeStep with tools" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     const param = llm.types.Tool.Param{
@@ -694,7 +694,7 @@ test "Gemini.executeStep with tools" {
         .{ .prompt = "Hello" },
     };
 
-    var outcome = try p.executeStep(allocator, config, input, null);
+    const outcome = try p.executeStep(allocator, config, input, null);
     defer outcome.result.deinit();
     defer outcome.continuation.deinit();
     const result = outcome.result;
@@ -722,7 +722,7 @@ test "Gemini.executeStep HTTP failure" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     const config = llm.types.SessionConfig{
@@ -800,7 +800,7 @@ test "Gemini.executeStepStreaming success" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     const config = llm.types.SessionConfig{
@@ -838,7 +838,7 @@ test "Gemini.executeStepStreaming success" {
                                     if (tc.arguments.len > 0) {
                                         std.testing.expectEqualStrings("location", tc.arguments[0].name) catch {};
                                         if (std.mem.eql(u8, tc.arguments[0].value.string, "San Francisco")) {
-                                            self.tool_call_arguments_received = true;
+                                             self.tool_call_arguments_received = true;
                                         }
                                     }
                                 },
@@ -858,7 +858,7 @@ test "Gemini.executeStepStreaming success" {
     defer ctx.model_output_text.deinit();
     defer ctx.thought_text.deinit();
 
-    var outcome = try p.executeStepStreaming(allocator, config, input, null, Context.callback, &ctx);
+    const outcome = try p.executeStepStreaming(allocator, config, input, null, Context.callback, &ctx);
     defer outcome.result.deinit();
     defer outcome.continuation.deinit();
     const result = outcome.result;
@@ -884,7 +884,7 @@ test "Gemini.executeStepStreaming success" {
     try std.testing.expectEqualStrings("location", result.tool_calls[0].arguments[0].name);
     try std.testing.expectEqualStrings("San Francisco", result.tool_calls[0].arguments[0].value.string);
 
-    const gemini_continuation: *gemini_types.StepContinuation = @fieldParentPtr("interface", continuation);
+    const gemini_continuation: *const gemini_types.StepContinuation = @fieldParentPtr("interface", continuation);
     try std.testing.expectEqualStrings("interaction_streaming_123", gemini_continuation.interaction_id);
     try std.testing.expectEqual(1, call_counts[0]);
 }
@@ -962,7 +962,7 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     const config = llm.types.SessionConfig{
@@ -1020,7 +1020,7 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
     defer ctx.model_output_text.deinit();
     defer ctx.thought_text.deinit();
 
-    var outcome = try p.executeStepStreaming(allocator, config, input, null, Context.callback, &ctx);
+    const outcome = try p.executeStepStreaming(allocator, config, input, null, Context.callback, &ctx);
     defer outcome.result.deinit();
     defer outcome.continuation.deinit();
     const result = outcome.result;
@@ -1045,7 +1045,7 @@ test "Gemini.executeStepStreaming with CRLF line endings" {
     try std.testing.expectEqualStrings("location", result.tool_calls[0].arguments[0].name);
     try std.testing.expectEqualStrings("San Francisco", result.tool_calls[0].arguments[0].value.string);
 
-    const gemini_continuation: *gemini_types.StepContinuation = @fieldParentPtr("interface", continuation);
+    const gemini_continuation: *const gemini_types.StepContinuation = @fieldParentPtr("interface", continuation);
     try std.testing.expectEqualStrings("interaction_streaming_123", gemini_continuation.interaction_id);
     try std.testing.expectEqual(1, call_counts[0]);
 }
@@ -1086,18 +1086,18 @@ test "Gemini.executeStep returns function call" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
     };
 
-    var outcome = try p.executeStep(allocator, config, &.{}, null);
+    const outcome = try p.executeStep(allocator, config, &.{}, null);
     defer outcome.result.deinit();
     defer outcome.continuation.deinit();
     const result = outcome.result;
-    const gemini_continuation: *gemini_types.StepContinuation = @fieldParentPtr("interface", outcome.continuation);
+    const gemini_continuation: *const gemini_types.StepContinuation = @fieldParentPtr("interface", outcome.continuation);
     try std.testing.expectEqualStrings("interaction_fc", gemini_continuation.interaction_id);
     try std.testing.expectEqual(1, result.tool_calls.len);
     try std.testing.expectEqualStrings("call_abc", result.tool_calls[0].id);
@@ -1138,7 +1138,7 @@ test "Gemini.executeStepStreaming multiple interaction_created" {
         },
     };
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
@@ -1177,7 +1177,7 @@ test "Gemini.executeStepStreaming duplicate step start" {
         },
     };
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
@@ -1215,7 +1215,7 @@ test "Gemini.executeStepStreaming delta for non-existent step index" {
         },
     };
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
@@ -1254,7 +1254,7 @@ test "Gemini.executeStepStreaming mismatched interaction completed ID" {
         },
     };
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
@@ -1292,15 +1292,15 @@ test "Gemini.executeStepStreaming fallback interaction ID to unknown" {
         },
     };
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
     const config = llm.types.SessionConfig{
         .model = .{ .id = "gemini-model", .display_name = "Gemini Model" },
     };
-    var outcome = try p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null);
+    const outcome = try p.executeStepStreaming(allocator, config, &.{}, null, CallbackState.callback, null);
     defer outcome.result.deinit();
     defer outcome.continuation.deinit();
-    const gemini_continuation: *gemini_types.StepContinuation = @fieldParentPtr("interface", outcome.continuation);
+    const gemini_continuation: *const gemini_types.StepContinuation = @fieldParentPtr("interface", outcome.continuation);
     try std.testing.expectEqualStrings("unknown", gemini_continuation.interaction_id);
 }
 
@@ -1360,7 +1360,7 @@ test "Gemini.executeStepStreaming malformed stream payload" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     const config = llm.types.SessionConfig{
@@ -1421,7 +1421,7 @@ test "Gemini.executeStep with system prompt" {
     };
 
     var prov = try MakeProvider(testing.MockHttpClient).init(allocator, mock_client, "TEST_API_KEY");
-    var p = prov.provider();
+    const p = prov.provider();
     defer p.deinit();
 
     const config = llm.types.SessionConfig{
@@ -1432,7 +1432,7 @@ test "Gemini.executeStep with system prompt" {
         .{ .prompt = "Hello" },
     };
 
-    var outcome = try p.executeStep(allocator, config, input, null);
+    const outcome = try p.executeStep(allocator, config, input, null);
     defer outcome.result.deinit();
     defer outcome.continuation.deinit();
 
