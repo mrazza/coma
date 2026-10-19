@@ -172,7 +172,7 @@ fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*Str
             );
         next_steps.clearRetainingCapacity();
 
-        var step_result = step_outcome.result;
+        const step_result = step_outcome.result;
         const step_continuation = step_outcome.continuation;
 
         if (self.prev_continuation) |old_continuation| old_continuation.deinit();

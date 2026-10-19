@@ -186,7 +186,7 @@ fn writeTempFile(allocator: std.mem.Allocator, io: std.Io, prefix: []const u8, c
     const temp_path = try std.fmt.allocPrint(allocator, "{s}" ++ std.fs.path.sep_str ++ "{s}_{x}.txt", .{ temp_dir, prefix, rand_val });
     errdefer allocator.free(temp_path);
 
-    var file = try std.Io.Dir.createFileAbsolute(io, temp_path, .{});
+    const file = try std.Io.Dir.createFileAbsolute(io, temp_path, .{});
     defer file.close(io);
 
     var offset: u64 = 0;
@@ -469,11 +469,11 @@ test "writeTempFile creates and writes file content" {
     defer testing_allocator.free(temp_path);
     defer std.Io.Dir.deleteFileAbsolute(io, temp_path) catch {};
 
-    var file = try std.Io.Dir.openFileAbsolute(io, temp_path, .{ .mode = .read_only });
+    const file = try std.Io.Dir.openFileAbsolute(io, temp_path, .{ .mode = .read_only });
     defer file.close(io);
 
     var read_buf: [100]u8 = undefined;
-    var slices = [_][]u8{&read_buf};
+    const slices = [_][]u8{&read_buf};
     const bytes_read = try file.readPositional(io, &slices, 0);
     try std.testing.expectEqualStrings(sample_content, read_buf[0..bytes_read]);
 }

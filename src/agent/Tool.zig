@@ -67,7 +67,7 @@ pub fn execute(self: *const Tool, allocator: Allocator, io: Io, session_state: *
 /// Wraps an execution function into a `ToolExecuteFn` suitable for a `Tool.VTable`.
 ///
 /// Validates at compile time that the function parameters match the tool descriptor.
-/// Stateful tools that take `*const Tool` or `*Tool` should use this function to populate
+/// Stateful tools that take `*const Tool` should use this function to populate
 /// their `VTable.execute`.
 pub fn wrapExecute(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) ToolExecuteFn {
     return comptime blk: {
@@ -249,7 +249,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         for (fn_info.params, 0..) |fn_param, i| {
             result_types[i] = fn_param.type.?;
 
-            if (fn_param.type.? == Allocator or fn_param.type.? == Io or fn_param.type.? == ToolCallContext or fn_param.type.? == *const Tool or fn_param.type.? == *Tool) {
+            if (fn_param.type.? == Allocator or fn_param.type.? == Io or fn_param.type.? == ToolCallContext or fn_param.type.? == *const Tool) {
                 // Environment parameter
             } else {
                 if (param_idx >= descriptor_params.len) {
@@ -291,8 +291,6 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                         args[func_idx] = call_ctx;
                     } else if (comptime T == *const Tool) {
                         args[func_idx] = tool;
-                    } else if (comptime T == *Tool) {
-                        args[func_idx] = @constCast(tool);
                     } else {
                         const curr_descriptor = comptime descriptor.parameters[descriptor_idx];
                         descriptor_idx += 1;
@@ -413,7 +411,7 @@ test "stateful tool with @fieldParentPtr" {
             return try std.fmt.allocPrint(alloc, "{s}{d}{s}", .{ self.prefix, arg1, arg2 });
         }
     };
-    var stateful_tool = StatefulTool{
+    const stateful_tool = StatefulTool{
         .tool = .{
             .descriptor = tool_descriptor,
             .vtable = &StatefulTool.vtable,
@@ -1090,33 +1088,6 @@ test "execute - inject *const Tool with wrapExecute" {
     try std.testing.expectEqualStrings("tool_ptr_test", res.result);
 }
 
-test "execute - inject *Tool with wrapExecute" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-    var session_state = SessionState.init(allocator);
-    defer session_state.deinit();
-
-    const desc: llm.types.Tool = .{
-        .name = "mutable_tool_ptr_test",
-        .description = "desc",
-        .parameters = &.{},
-    };
-    const Impl = struct {
-        fn run(tool: *Tool, alloc: Allocator) ![]const u8 {
-            return try alloc.dupe(u8, tool.descriptor.name);
-        }
-    };
-    const vtable: Tool.VTable = .{
-        .execute = Tool.wrapExecute(desc, Impl.run),
-    };
-    const tool = Tool{
-        .descriptor = desc,
-        .vtable = &vtable,
-    };
-    var res = try tool.execute(allocator, io, &session_state, "id", &.{});
-    defer res.deinit();
-    try std.testing.expectEqualStrings("mutable_tool_ptr_test", res.result);
-}
 
 test "execute with ToolCallContext" {
     const allocator = std.testing.allocator;

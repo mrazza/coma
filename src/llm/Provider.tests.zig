@@ -5,9 +5,9 @@ const testing = @import("testing");
 test "Provider.listModels delegates to VTable" {
     const allocator = std.testing.allocator;
     var mock_impl = testing.MockProvider{};
-    var prov = mock_impl.provider();
+    const prov = mock_impl.provider();
 
-    var result = try prov.listModels(allocator);
+    const result = try prov.listModels(allocator);
     defer result.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), mock_impl.list_models_calls);
@@ -18,7 +18,7 @@ test "Provider.executeStep delegates to VTable" {
     const allocator = std.testing.allocator;
     var mock_impl = testing.MockProvider{};
     defer mock_impl.deinit();
-    var prov = mock_impl.provider();
+    const prov = mock_impl.provider();
 
     const model = llm.types.Model{
         .id = "test-model-id",
@@ -31,7 +31,7 @@ test "Provider.executeStep delegates to VTable" {
 
     const last_step_continuation = testing.MockProvider.stepContinuation();
 
-    var outcome = try prov.executeStep(allocator, session_config, input_steps, last_step_continuation);
+    const outcome = try prov.executeStep(allocator, session_config, input_steps, last_step_continuation);
     defer outcome.result.deinit();
     defer outcome.continuation.deinit();
 
@@ -44,7 +44,7 @@ test "Provider.executeStep delegates to VTable" {
 
 test "Provider.deinit delegates to VTable" {
     var mock_impl = testing.MockProvider{};
-    var prov = mock_impl.provider();
+    const prov = mock_impl.provider();
 
     prov.deinit();
     try std.testing.expectEqual(@as(usize, 1), mock_impl.deinit_calls);
@@ -62,8 +62,8 @@ test "Provider.listModels returns custom success and error" {
         var expected_result = testing.MockProvider.listModelsResult(dummy_models);
         mock_impl.list_models_result = &expected_result;
 
-        var prov = mock_impl.provider();
-        var result = try prov.listModels(allocator);
+        const prov = mock_impl.provider();
+        const result = try prov.listModels(allocator);
         defer result.deinit();
 
         try std.testing.expectEqual(@as(usize, 1), mock_impl.list_models_calls);
@@ -75,7 +75,7 @@ test "Provider.listModels returns custom success and error" {
         var mock_impl = testing.MockProvider{};
         mock_impl.list_models_result = error.HttpRequestFailed;
 
-        var prov = mock_impl.provider();
+        const prov = mock_impl.provider();
         try std.testing.expectError(error.HttpRequestFailed, prov.listModels(allocator));
     }
 }
@@ -98,8 +98,8 @@ test "Provider.executeStep returns custom success and error" {
         };
         mock_impl.execute_step_results = &outcomes;
 
-        var prov = mock_impl.provider();
-        var outcome = try prov.executeStep(allocator, session_config, &.{}, null);
+        const prov = mock_impl.provider();
+        const outcome = try prov.executeStep(allocator, session_config, &.{}, null);
         defer outcome.result.deinit();
         defer outcome.continuation.deinit();
 
@@ -115,7 +115,7 @@ test "Provider.executeStep returns custom success and error" {
         };
         mock_impl.execute_step_results = &outcomes;
 
-        var prov = mock_impl.provider();
+        const prov = mock_impl.provider();
         try std.testing.expectError(error.HttpRequestFailed, prov.executeStep(allocator, session_config, &.{}, null));
     }
 }
@@ -124,7 +124,7 @@ test "Provider.executeStepStreaming delegates to VTable" {
     const allocator = std.testing.allocator;
     var mock_impl = testing.MockProvider{};
     defer mock_impl.deinit();
-    var prov = mock_impl.provider();
+    const prov = mock_impl.provider();
 
     const model = llm.types.Model{
         .id = "test-model-id",
@@ -144,7 +144,7 @@ test "Provider.executeStepStreaming delegates to VTable" {
         }
     };
 
-    var outcome = try prov.executeStepStreaming(allocator, session_config, input_steps, prev_continuation, CallbackState.callback, null);
+    const outcome = try prov.executeStepStreaming(allocator, session_config, input_steps, prev_continuation, CallbackState.callback, null);
     defer outcome.result.deinit();
     defer outcome.continuation.deinit();
 
@@ -181,8 +181,8 @@ test "Provider.executeStepStreaming returns custom success and error" {
         };
         mock_impl.execute_step_results = &outcomes;
 
-        var prov = mock_impl.provider();
-        var outcome = try prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null);
+        const prov = mock_impl.provider();
+        const outcome = try prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null);
         defer outcome.result.deinit();
         defer outcome.continuation.deinit();
 
@@ -198,7 +198,7 @@ test "Provider.executeStepStreaming returns custom success and error" {
         };
         mock_impl.execute_step_results = &outcomes;
 
-        var prov = mock_impl.provider();
+        const prov = mock_impl.provider();
         try std.testing.expectError(error.HttpRequestFailed, prov.executeStepStreaming(allocator, session_config, &.{}, null, CallbackState.callback, null));
     }
 }
