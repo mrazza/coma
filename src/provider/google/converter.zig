@@ -194,7 +194,7 @@ pub fn toArgument(arg: api.FunctionArgument) llm.types.Argument {
 
 /// Converts a slice of Gemini API function arguments to a generic argument slice.
 /// Caller owns the returned slice, but not the individual strings.
-pub fn toArguments(allocator: Allocator, args: []const api.FunctionArgument) ![]llm.types.Argument {
+pub fn toArguments(allocator: Allocator, args: []const api.FunctionArgument) ![]const llm.types.Argument {
     const result = try allocator.alloc(llm.types.Argument, args.len);
     for (args, 0..) |arg, i| {
         result[i] = toArgument(arg);
@@ -204,7 +204,7 @@ pub fn toArguments(allocator: Allocator, args: []const api.FunctionArgument) ![]
 
 /// Converts a slice of Gemini API function arguments to a generic argument slice, duplicating all strings.
 /// Caller owns the returned slice and the individual strings.
-pub fn dupeArguments(allocator: Allocator, args: []const api.FunctionArgument) ![]llm.types.Argument {
+pub fn dupeArguments(allocator: Allocator, args: []const api.FunctionArgument) ![]const llm.types.Argument {
     const result = try allocator.alloc(llm.types.Argument, args.len);
     var initialized: usize = 0;
     errdefer {
@@ -251,7 +251,7 @@ pub fn toModel(model: api.GeminiModel) llm.types.Model {
 
 /// Converts a slice of Gemini API models to a generic model slice.
 /// Caller owns the returned slice.
-pub fn toModels(allocator: Allocator, models: []const api.GeminiModel) ![]llm.types.Model {
+pub fn toModels(allocator: Allocator, models: []const api.GeminiModel) ![]const llm.types.Model {
     const result = try allocator.alloc(llm.types.Model, models.len);
     for (models, 0..) |model, i| {
         result[i] = toModel(model);

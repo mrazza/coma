@@ -13,7 +13,7 @@ const MarkdownRendering = @import("MarkdownRendering.zig");
 /// Loads the GEMINI_API_KEY from the environment variables.
 /// If not found, it attempts to read it from a `.env` file in the current working directory.
 /// Returns an allocated string containing the API key, or `error.ApiKeyMissing` if not found.
-fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.process.Environ.Map) ![]const u8 {
+fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) ![]const u8 {
     if (environ_map.get("GEMINI_API_KEY")) |env_val| {
         return try allocator.dupe(u8, env_val);
     }
@@ -22,7 +22,7 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
         return try allocator.dupe(u8, env_val);
     }
 
-    var file = std.Io.Dir.openFile(.cwd(), io, ".env", .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFile(.cwd(), io, ".env", .{}) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("Error: GEMINI_API_KEY and GOOGLE_API_KEY environment variable is not set, and no .env file was found.\n", .{});
             return error.ApiKeyMissing;

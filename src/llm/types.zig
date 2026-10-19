@@ -100,7 +100,7 @@ pub const ToolCall = struct {
     /// The name of the tool to be called.
     name: []const u8,
     /// The arguments provided for the tool call.
-    arguments: []Argument,
+    arguments: []const Argument,
 };
 
 /// The result of executing a step (interaction) with the LLM.
