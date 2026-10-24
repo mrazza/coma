@@ -177,7 +177,7 @@ fn sanitizeUtf8(allocator: std.mem.Allocator, input: []const u8) std.mem.Allocat
         return try allocator.dupe(u8, input);
     }
 
-    var out: std.ArrayList(u8) = .initCapacity(allocator, input.len);
+    var out: std.ArrayList(u8) = try .initCapacity(allocator, input.len);
     defer out.deinit(allocator);
 
     var i: usize = 0;
