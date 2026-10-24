@@ -198,9 +198,7 @@ fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*Str
                 tool_futures.async(.result, executeToolCall, .{ self, tool_call });
             }
             for (0..step_result.tool_calls.len) |_| {
-                const tool_result_wrapper = tool_futures.await() catch |err| switch (err) {
-                    error.Canceled => unreachable,
-                };
+                const tool_result_wrapper = try tool_futures.await();
                 var tool_result = try tool_result_wrapper.result;
 
                 intermediate_results.append(allocator, .{ .tool_result = tool_result }) catch |err| {

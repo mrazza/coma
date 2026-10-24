@@ -69,7 +69,7 @@ pub fn makeTool(
     , .{ shell_name, MAX_STREAM_LINES, MAX_STREAM_BYTES / 1024 });
 
     const S = struct {
-        fn execute(allocator: std.mem.Allocator, io: std.Io, command: []const u8, timeout_secs: ?i64) std.mem.Allocator.Error![]const u8 {
+        fn execute(allocator: std.mem.Allocator, io: std.Io, command: []const u8, timeout_secs: ?i64) (std.mem.Allocator.Error || std.Io.Cancelable)![]const u8 {
             const argv = try make_argv_fn(allocator, command);
             defer allocator.free(argv);
 
@@ -119,7 +119,7 @@ pub fn makeTool(
                 return try formatJson(allocator, shell_res);
             } else |err| {
                 const error_msg = switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
+                    error.OutOfMemory, error.Canceled => |e| return e,
                     error.Timeout => try std.fmt.allocPrint(allocator, "Command timed out after {d} seconds", .{effective_timeout_secs}),
                     error.StreamTooLong => try std.fmt.allocPrint(allocator, "Command output exceeded maximum process stream limit ({d} bytes)", .{MAX_PROCESS_STREAM_BYTES}),
                     else => try std.fmt.allocPrint(allocator, "Failed to execute command: {}", .{err}),
@@ -205,14 +205,45 @@ fn sanitizeUtf8(allocator: std.mem.Allocator, input: []const u8) std.mem.Allocat
     return try out.toOwnedSlice(allocator);
 }
 
+fn getTempDirAlloc(allocator: std.mem.Allocator) std.mem.Allocator.Error![]const u8 {
+    if (builtin.os.tag == .windows) {
+        const env: std.process.Environ = .{ .block = .global };
+        inline for (.{ "TEMP", "TMP" }) |var_name| {
+            if (env.getAlloc(allocator, var_name)) |val| {
+                if (val.len > 0) return val;
+                allocator.free(val);
+            } else |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {},
+            }
+        }
+        if (env.getAlloc(allocator, "USERPROFILE")) |profile| {
+            defer allocator.free(profile);
+            if (profile.len > 0) {
+                return try std.fs.path.join(allocator, &.{ profile, "AppData", "Local", "Temp" });
+            }
+        } else |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {},
+        }
+        return try allocator.dupe(u8, "C:\\Windows\\Temp");
+    }
+    return try allocator.dupe(u8, "/tmp");
+}
+
 /// Creates a temporary file with the given prefix and writes the provided content into it.
 /// Returns the allocated path of the created temporary file, which the caller is responsible for freeing.
 fn writeTempFile(allocator: std.mem.Allocator, io: std.Io, prefix: []const u8, content: []const u8) ![]const u8 {
     var rand_bytes: [8]u8 = undefined;
     io.random(&rand_bytes);
     const rand_val = std.mem.readInt(u64, &rand_bytes, .little);
-    const temp_dir = if (builtin.os.tag == .windows) "C:\\Windows\\Temp" else "/tmp";
-    const temp_path = try std.fmt.allocPrint(allocator, "{s}" ++ std.fs.path.sep_str ++ "{s}_{x}.txt", .{ temp_dir, prefix, rand_val });
+    const temp_dir = try getTempDirAlloc(allocator);
+    defer allocator.free(temp_dir);
+
+    const file_name = try std.fmt.allocPrint(allocator, "{s}_{x}.txt", .{ prefix, rand_val });
+    defer allocator.free(file_name);
+
+    const temp_path = try std.fs.path.join(allocator, &.{ temp_dir, file_name });
     errdefer allocator.free(temp_path);
 
     const file = try std.Io.Dir.createFileAbsolute(io, temp_path, .{});
@@ -234,7 +265,7 @@ const CutoffResult = struct {
     reason: CutoffReason,
 };
 
-fn processStream(allocator: std.mem.Allocator, io: std.Io, stream_name: []const u8, content: []const u8) std.mem.Allocator.Error![]const u8 {
+fn processStream(allocator: std.mem.Allocator, io: std.Io, stream_name: []const u8, content: []const u8) (std.mem.Allocator.Error || std.Io.Cancelable)![]const u8 {
     const maybe_cutoff = findCutoff(content, MAX_STREAM_LINES, MAX_STREAM_BYTES);
     if (maybe_cutoff == null) {
         return try sanitizeUtf8(allocator, content);
@@ -261,12 +292,13 @@ fn processStream(allocator: std.mem.Allocator, io: std.Io, stream_name: []const 
             "{s}\n\n[Output truncated to {s}. Full output saved to {s}]",
             .{ sanitized_truncated, reason_str, temp_path },
         );
-    } else |err| {
-        return try std.fmt.allocPrint(
+    } else |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => return try std.fmt.allocPrint(
             allocator,
             "{s}\n\n[Output truncated to {s}. Failed to save overflow file: {}]",
             .{ sanitized_truncated, reason_str, err },
-        );
+        ),
     }
 }
 
@@ -284,11 +316,6 @@ fn findCutoff(content: []const u8, max_lines: usize, max_bytes: usize) ?CutoffRe
                 return .{ .cutoff = idx + 1, .reason = .lines };
             }
         }
-    }
-    if (content.len > max_bytes) {
-        var cut = max_bytes;
-        while (cut > 0 and cut < content.len and (content[cut] & 0xC0) == 0x80) : (cut -= 1) {}
-        return .{ .cutoff = cut, .reason = .bytes };
     }
     return null;
 }
@@ -624,7 +651,7 @@ test "Shell tool non-UTF8 output sanitization" {
     const args: []const llm.types.Argument = &.{
         .{
             .name = "command",
-            .value = .{ .string = "printf 'hello \\xff\\xfe world'" },
+            .value = .{ .string = "printf 'hello \\377\\376 world'" },
         },
     };
 
