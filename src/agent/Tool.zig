@@ -21,7 +21,7 @@ pub const CallError = error{
     /// An argument was provided with a name that does not match the expected name;
     /// either an unexpected name or the order does not match.
     ArgumentMismatch,
-} || std.mem.Allocator.Error;
+} || std.mem.Allocator.Error || std.Io.Cancelable;
 
 /// Intrusive interface representing a tool an Agent can call.
 ///
@@ -1264,4 +1264,27 @@ test "Tool.deinit on Tool.fromFn is safe no-op" {
 
     var tool = Tool.fromFn(descriptor, tool_impl.run);
     tool.deinit();
+}
+
+test "Tool propagates error.Canceled on execution" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
+
+    const descriptor: llm.types.Tool = .{
+        .name = "test_canceled_tool",
+        .description = "tool returning error.Canceled",
+        .parameters = &.{},
+    };
+    const tool_impl = struct {
+        pub fn run(_: Allocator) (Allocator.Error || std.Io.Cancelable)![]const u8 {
+            return error.Canceled;
+        }
+    };
+
+    var tool = Tool.fromFn(descriptor, tool_impl.run);
+    defer tool.deinit();
+
+    try std.testing.expectError(error.Canceled, tool.execute(allocator, io, &session_state, "id_cancel", &.{}));
 }

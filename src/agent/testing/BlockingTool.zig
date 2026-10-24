@@ -55,13 +55,13 @@ pub fn init(state: *State, io: Io) BlockingTool {
 }
 
 /// Execution function using @fieldParentPtr.
-pub fn execute(tool_ptr: *const Tool, alloc: std.mem.Allocator) error{ ArgumentMismatch, ArgumentTypeMismatch, OutOfMemory, RequiredArgumentMissing }![]const u8 {
+pub fn execute(tool_ptr: *const Tool, alloc: std.mem.Allocator) Tool.CallError![]const u8 {
     const self: *const BlockingTool = @fieldParentPtr("tool", tool_ptr);
     self.state.started.store(true, .monotonic);
     while (!self.state.should_stop.load(.monotonic)) {
-        self.io.checkCancel() catch return error.OutOfMemory;
+        try self.io.checkCancel();
     }
-    return alloc.dupe(u8, "blocking tool done") catch return error.OutOfMemory;
+    return try alloc.dupe(u8, "blocking tool done");
 }
 
 /// Returns true if the tool execution function has been entered.
