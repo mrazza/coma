@@ -154,14 +154,14 @@ fn executeTurnInternal(self: *Session, turn: types.Turn, callback_context: ?*Str
     }
 
     while (true) {
-        const step_outcome = if (callback_context) |cb|
+        const step_outcome = if (callback_context) |ctx|
             try self.provider.executeStepStreaming(
                 allocator,
                 self.session_config,
                 next_steps.items,
                 self.prev_continuation,
                 streamingCallbackProxy,
-                cb,
+                ctx,
             )
         else
             try self.provider.executeStep(
