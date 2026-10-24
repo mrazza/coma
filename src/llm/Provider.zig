@@ -11,10 +11,17 @@ const StreamingCallback = types.StreamingCallback;
 const StepContinuation = types.StepContinuation;
 const StepOutcome = types.StepOutcome;
 
+/// Intrusive interface for an LLM provider.
+///
+/// Concrete providers (such as Gemini) implement this interface by embedding `Provider` as a field
+/// (e.g. `interface: Provider = .{ .vtable = &vtable }`) and implementing the methods in `Provider.VTable`.
+///
+/// **Pointer Stability & Memory Safety:**
+/// Provider method implementations recover the enclosing provider struct using
+/// `@fieldParentPtr("interface", provider)`. The enclosing provider instance MUST NOT be copied by
+/// value or moved in memory once its pointer or interface reference is taken.
 const Provider = @This();
 
-/// Opaque pointer to the provider implementation's context.
-ptr: *anyopaque,
 /// Pointer to the provider implementation's virtual function table.
 vtable: *const VTable,
 
@@ -28,38 +35,38 @@ pub const ProviderError = error{
 /// The virtual function table defining the methods that an LLM provider must implement.
 pub const VTable = struct {
     /// Lists all models available from the provider.
-    list_models: *const fn (ptr: *anyopaque, allocator: Allocator) ProviderError!ListModelsResult,
+    list_models: *const fn (provider: *Provider, allocator: Allocator) ProviderError!*ListModelsResult,
 
     /// Executes a single interaction step with the LLM.
     execute_step: *const fn (
-        ptr: *anyopaque,
+        provider: *Provider,
         allocator: Allocator,
         session_config: SessionConfig,
         input: []const Step,
-        previous_step: ?StepContinuation,
+        previous_step: ?*const StepContinuation,
     ) ProviderError!StepOutcome,
 
     /// Executes a single interaction step with the LLM, streaming the response.
     execute_step_streaming: *const fn (
-        ptr: *anyopaque,
+        provider: *Provider,
         allocator: Allocator,
         session_config: SessionConfig,
         input: []const Step,
-        previous_step: ?StepContinuation,
+        previous_step: ?*const StepContinuation,
         callback: StreamingCallback,
         callback_context: ?*anyopaque,
     ) ProviderError!StepOutcome,
 
     /// Frees the resources associated with the provider.
-    deinit: *const fn (ptr: *anyopaque) void,
+    deinit: *const fn (provider: *Provider) void,
 };
 
 /// Lists all models available from the current provider.
 ///
 /// `allocator` is used to allocate the structures and strings in the returned `ListModelsResult`.
 /// The caller **MUST** call `deinit()` on the returned `ListModelsResult` to free the allocated memory.
-pub fn listModels(provider: *Provider, allocator: Allocator) ProviderError!ListModelsResult {
-    return provider.vtable.list_models(provider.ptr, allocator);
+pub fn listModels(provider: *Provider, allocator: Allocator) ProviderError!*ListModelsResult {
+    return provider.vtable.list_models(provider, allocator);
 }
 
 /// Executes a single step of interaction with the LLM provider.
@@ -76,9 +83,9 @@ pub fn executeStep(
     allocator: Allocator,
     session_config: SessionConfig,
     input: []const Step,
-    previous_step: ?StepContinuation,
+    previous_step: ?*const StepContinuation,
 ) ProviderError!StepOutcome {
-    return provider.vtable.execute_step(provider.ptr, allocator, session_config, input, previous_step);
+    return provider.vtable.execute_step(provider, allocator, session_config, input, previous_step);
 }
 
 /// Executes a single step of interaction with the LLM provider, streaming chunks back to the callback.
@@ -100,14 +107,14 @@ pub fn executeStepStreaming(
     allocator: Allocator,
     session_config: SessionConfig,
     input: []const Step,
-    previous_step: ?StepContinuation,
+    previous_step: ?*const StepContinuation,
     callback: StreamingCallback,
     callback_context: ?*anyopaque,
 ) ProviderError!StepOutcome {
-    return provider.vtable.execute_step_streaming(provider.ptr, allocator, session_config, input, previous_step, callback, callback_context);
+    return provider.vtable.execute_step_streaming(provider, allocator, session_config, input, previous_step, callback, callback_context);
 }
 
 /// Frees the resources associated with the provider.
 pub fn deinit(provider: *Provider) void {
-    provider.vtable.deinit(provider.ptr);
+    provider.vtable.deinit(provider);
 }

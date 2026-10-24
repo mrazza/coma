@@ -6,5 +6,5 @@ const SessionConfig = @import("agent").types.SessionConfig;
 
 const Config = @This();
 
-provider: Provider,
+provider: *Provider,
 default_session_config: SessionConfig,

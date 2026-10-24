@@ -13,7 +13,7 @@ const MarkdownRendering = @import("MarkdownRendering.zig");
 /// Loads the GEMINI_API_KEY from the environment variables.
 /// If not found, it attempts to read it from a `.env` file in the current working directory.
 /// Returns an allocated string containing the API key, or `error.ApiKeyMissing` if not found.
-fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.process.Environ.Map) ![]const u8 {
+fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) ![]const u8 {
     if (environ_map.get("GEMINI_API_KEY")) |env_val| {
         return try allocator.dupe(u8, env_val);
     }
@@ -22,7 +22,7 @@ fn loadApiKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *std.proces
         return try allocator.dupe(u8, env_val);
     }
 
-    var file = std.Io.Dir.openFile(.cwd(), io, ".env", .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFile(.cwd(), io, ".env", .{}) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("Error: GEMINI_API_KEY and GOOGLE_API_KEY environment variable is not set, and no .env file was found.\n", .{});
             return error.ApiKeyMissing;
@@ -79,17 +79,46 @@ fn executeTypescript(allocator: std.mem.Allocator, io: std.Io, code: []const u8)
     return result.stdout;
 }
 
-fn getWeather(allocator: std.mem.Allocator, zip_code: i64, ctx: *WeatherToolCtx) ![]const u8 {
-    const result_str = if (zip_code == 7302)
-        try allocator.dupe(u8, ctx.weather_str)
-    else
-        try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip_code});
-
-    return result_str;
-}
-
-const WeatherToolCtx = struct {
+const WeatherTool = struct {
+    tool: Tool,
     weather_str: []const u8,
+
+    pub const descriptor: llm.types.Tool = .{
+        .name = "get_weather",
+        .description = "Get the current weather for a given zip code.",
+        .parameters = &.{
+            .{
+                .name = "zip_code",
+                .type = .integer,
+                .required = true,
+                .description = "The 5-digit zip code to get the weather for.",
+            },
+        },
+    };
+
+    const vtable: Tool.VTable = .{
+        .execute = Tool.wrapExecute(descriptor, getWeather),
+    };
+
+    pub fn init(weather_str: []const u8) WeatherTool {
+        return .{
+            .tool = .{
+                .descriptor = descriptor,
+                .vtable = &vtable,
+            },
+            .weather_str = weather_str,
+        };
+    }
+
+    fn getWeather(tool: *const Tool, allocator: std.mem.Allocator, zip_code: i64) ![]const u8 {
+        const self: *const WeatherTool = @fieldParentPtr("tool", tool);
+        const result_str = if (zip_code == 7302)
+            try allocator.dupe(u8, self.weather_str)
+        else
+            try std.fmt.allocPrint(allocator, "Error: Weather data is only available for zip code 07302. Requested: {}", .{zip_code});
+
+        return result_str;
+    }
 };
 
 /// The main entry point of the application.
@@ -110,10 +139,10 @@ pub fn main(init: std.process.Init) !void {
     var http_client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer http_client.deinit();
     var gemini_client: provider.Gemini = try .init(allocator, &http_client, api_key);
-    var client = gemini_client.provider();
+    const client = gemini_client.provider();
     defer client.deinit();
 
-    var models_list = try client.listModels(allocator);
+    const models_list = try client.listModels(allocator);
     defer models_list.deinit();
     const models = models_list.models;
     var selected_model: ?llm.types.Model = null;
@@ -124,37 +153,31 @@ pub fn main(init: std.process.Init) !void {
         }
     } else unreachable;
 
-    var weather_ctx: WeatherToolCtx = .{ .weather_str = "Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph" };
+    var weather_tool = WeatherTool.init("Weather report for 07302: Sunny, 72°F, Humidity 50%, Wind 5 mph");
 
-    const tools = &[_]Tool{
-        Tool.init(.{
-            .name = "execute_typescript",
-            .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
-            .parameters = &.{
-                .{
-                    .name = "code",
-                    .type = .string,
-                    .required = true,
-                    .description = "The typescript code to execute.",
-                },
+    var typescript_tool = Tool.fromFn(.{
+        .name = "execute_typescript",
+        .description = "Executes typescript code and returns the output printed to stdout. Takes a single string argument.",
+        .parameters = &.{
+            .{
+                .name = "code",
+                .type = .string,
+                .required = true,
+                .description = "The typescript code to execute.",
             },
-        }, executeTypescript),
-        Tool.initWithContext(.{
-            .name = "get_weather",
-            .description = "Get the current weather for a given zip code.",
-            .parameters = &.{
-                .{
-                    .name = "zip_code",
-                    .type = .integer,
-                    .required = true,
-                    .description = "The 5-digit zip code to get the weather for.",
-                },
-            },
-        }, getWeather, &weather_ctx),
-        agent.Tool.BuiltIn.Todo,
+        },
+    }, executeTypescript);
+
+    const tools = [_]*const Tool{
+        &typescript_tool,
+        &weather_tool.tool,
+        &agent.Tool.BuiltIn.Todo,
+        &agent.Tool.BuiltIn.Shell.default,
     };
+    defer typescript_tool.deinit();
+    defer weather_tool.tool.deinit();
 
-    const session_config: types.SessionConfig = .{ .model = selected_model.?, .tools = tools, .system_prompt = "You're a helpful agent. The user can ask you questions and you can use your tools to answer them. When receiving a new request from the user, plan out how you will address the request and document the steps on your Todo list. Keep the todo list updated as you progress." };
+    const session_config: types.SessionConfig = .{ .model = selected_model.?, .tools = &tools, .system_prompt = "You're a helpful agent. The user can ask you questions and you can use your tools to answer them. When receiving a new request from the user, plan out how you will address the request and document the steps on your Todo list. Keep the todo list updated as you progress and remove completed todo steps if they are no longer relevant." };
 
     const args = try init.minimal.args.toSlice(allocator);
     defer allocator.free(args);

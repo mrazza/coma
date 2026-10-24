@@ -155,9 +155,9 @@ pub const NewSessionRequest = struct {
     /// These expand the session's filesystem scope without changing `cwd`, which
     /// remains the base for relative paths. When omitted or empty, no
     /// additional roots are activated for the new session.
-    additionalDirectories: ?[][]const u8 = null,
+    additionalDirectories: ?[]const []const u8 = null,
     /// List of MCP (Model Context Protocol) servers the agent should connect to.
-    mcpServers: []McpServer,
+    mcpServers: []const McpServer,
 };
 
 /// MCP server transport types.
@@ -217,9 +217,9 @@ pub const McpServerStdio = struct {
     /// Absolute path to the MCP server executable.
     command: []const u8,
     /// Command-line arguments to pass to the MCP server.
-    args: [][]const u8,
+    args: []const []const u8,
     /// Environment variables to set when launching the MCP server.
-    env: []EnvVariable,
+    env: []const EnvVariable,
 };
 
 /// An environment variable to set when launching an MCP server.
@@ -252,7 +252,7 @@ pub const PromptRequest = struct {
     /// When available, [`ContentBlock::Resource`] is preferred
     /// as it avoids extra round-trips and allows the message to include
     /// pieces of context from sources the agent may not have access to.
-    prompt: []shared_api.ContentBlock,
+    prompt: []const shared_api.ContentBlock,
 };
 
 test "json parse initialize ClientRequest" {

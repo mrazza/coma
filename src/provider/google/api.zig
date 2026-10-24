@@ -242,7 +242,7 @@ pub const FunctionArgument = struct {
     name: []const u8,
     value: llm.types.Argument.Value,
 
-    pub fn parseFromJsonObject(allocator: std.mem.Allocator, source: std.json.Value) ![]FunctionArgument {
+    pub fn parseFromJsonObject(allocator: std.mem.Allocator, source: std.json.Value) ![]const FunctionArgument {
         var arguments: std.ArrayList(FunctionArgument) = .empty;
         defer arguments.deinit(allocator);
         var argument_iterator = source.object.iterator();
@@ -264,7 +264,7 @@ pub const FunctionArgument = struct {
 pub const FunctionCall = struct {
     id: []const u8,
     name: []const u8,
-    arguments: []FunctionArgument,
+    arguments: []const FunctionArgument,
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !FunctionCall {
         const id = try std.json.innerParseFromValue([]const u8, allocator, source.object.get("id") orelse return error.MissingField, options);
@@ -303,8 +303,8 @@ pub const StepType = enum {
 
 /// Represents a single step in a Gemini interaction, such as a thought, output, or function call.
 pub const Step = union(StepType) {
-    thought: []Content,
-    model_output: []Content,
+    thought: []const Content,
+    model_output: []const Content,
     function_call: FunctionCall,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Step {
@@ -319,7 +319,7 @@ pub const Step = union(StepType) {
             .thought => {
                 if (source.object.get("summary")) |summary| {
                     return Step{
-                        .thought = try std.json.innerParseFromValue([]Content, allocator, summary, options),
+                        .thought = try std.json.innerParseFromValue([]const Content, allocator, summary, options),
                     };
                 } else {
                     return Step{ .thought = &.{} };
@@ -328,7 +328,7 @@ pub const Step = union(StepType) {
             .model_output => {
                 if (source.object.get("content")) |content| {
                     return Step{
-                        .model_output = try std.json.innerParseFromValue([]Content, allocator, content, options),
+                        .model_output = try std.json.innerParseFromValue([]const Content, allocator, content, options),
                     };
                 } else {
                     return Step{ .model_output = &.{} };
@@ -344,7 +344,7 @@ pub const Step = union(StepType) {
 /// The full response from the Gemini API representing an interaction.
 pub const Interaction = struct {
     id: []const u8,
-    steps: []Step,
+    steps: []const Step,
 };
 
 pub const StreamingInteraction = struct {

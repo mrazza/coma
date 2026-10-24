@@ -21,14 +21,55 @@ pub const CallError = error{
     /// An argument was provided with a name that does not match the expected name;
     /// either an unexpected name or the order does not match.
     ArgumentMismatch,
-} || std.mem.Allocator.Error;
+} || std.mem.Allocator.Error || std.Io.Cancelable;
 
+/// Intrusive interface representing a tool an Agent can call.
+///
+/// Implementations must embed `Tool` directly as a field in their enclosing struct and implement
+/// the methods specified in `Tool.VTable`.
+///
+/// **Pointer Stability & Memory Safety:**
+/// Implementations recover the outer struct reference using `@fieldParentPtr("tool", self)` inside
+/// VTable function callbacks. Because this relies on fixed relative memory offsets, the enclosing struct
+/// instance MUST NOT be copied by value or relocated in memory once a pointer to its embedded `Tool`
+/// has been passed to a Session or another consumer.
+///
+/// **Thread Safety & Mutable State:**
+/// Tools receive immutable `*const Tool` references during execution. Execution methods can be called
+/// concurrently by parallel turns or simultaneous tool invocations within a single turn (e.g. via `Io.Select`).
+/// Implementations should avoid casting away const-ness with `@constCast`, as doing so obscures mutability
+/// and can cause undefined behavior if the tool instance is declared `const` (e.g. in read-only memory).
+///
+/// To manage mutable state cleanly without `@constCast`:
+/// 1. **Session-scoped state:** Use `ToolCallContext.getOrInitState` to store state inside `SessionState`.
+///    This isolates state to the active session (avoiding cross-session leakage). Note that multiple tool
+///    calls within a single turn can execute concurrently, so any shared state accessed simultaneously
+///    still requires appropriate synchronization (e.g., atomics or a mutex).
+/// 2. **Tool-scoped mutable objects (Clients, Pools, Atomics):** Store a pointer to the mutable object
+///    (e.g., `client: *HttpClient`, `state: *SharedState`). Because Zig's `const` is shallow, accessing
+///    a pointer field through `*const Tool` yields a mutable pointer (`*T`) with zero `@constCast`.
 const Tool = @This();
-const ToolExecuteFn = *const fn (allocator: Allocator, io: Io, call_ctx: ToolCallContext, ctx: ?*anyopaque, args: []const Argument) CallError![]const u8;
+
+pub const ToolExecuteFn = *const fn (
+    tool: *const Tool,
+    allocator: Allocator,
+    io: Io,
+    call_ctx: ToolCallContext,
+    args: []const Argument,
+) CallError![]const u8;
+pub const ToolDeinitFn = *const fn (tool: *Tool) void;
 
 descriptor: llm.types.Tool,
-execute_fn: ToolExecuteFn,
-ctx: ?*anyopaque,
+vtable: *const VTable,
+
+/// The virtual function table defining the method references used during tool execution.
+pub const VTable = struct {
+    /// Function to call when executing the tool.
+    execute: ToolExecuteFn,
+
+    /// Frees the resources associated with the tool.
+    deinit: ?ToolDeinitFn = null,
+};
 
 /// Executes the tool with the given arguments.
 ///
@@ -43,69 +84,18 @@ ctx: ?*anyopaque,
 /// for freeing the `ToolResult` by calling `deinit()`.
 pub fn execute(self: *const Tool, allocator: Allocator, io: Io, session_state: *SessionState, id: []const u8, args: []const Argument) CallError!ToolResult {
     const call_ctx: ToolCallContext = .{ .tool = self, .session_state = session_state };
-    const result = try self.execute_fn(allocator, io, call_ctx, self.ctx, args);
+    const result = try self.vtable.execute(self, allocator, io, call_ctx, args);
     errdefer allocator.free(result);
     return ToolResult.initTakingResultOwnership(allocator, self.descriptor.name, id, result);
 }
 
-/// Creates a Tool from a descriptor and a function.
-/// Tool calls will delegate to the provided function when called.
+/// Wraps an execution function into a `ToolExecuteFn` suitable for a `Tool.VTable`.
 ///
-/// `descriptor` is the tool's descriptor defining the structure of the tool for the LLM.
-/// `execute_fn` is the function to be called when the tool is executed.
-///
-/// The function arguments must match the descriptor parameters and be in the same order.
-/// The function should also take an allocator as an argument which will be used, at least,
-/// to allocate its result. The allocator can be in any position provided the other arguments
-/// are still in the same order as the parameters in the descriptor.
-///
-/// Additionally, the function can optionally accept an Io struct which represents the IO to use
-/// during the tool call, and/or a ToolCallContext struct which provides access to a session-scoped
-/// state store and the ability to define arbitrary context messages to inject before each turn.
-/// The function MUST be thread-safe as multiple calls to the tool function can occur in parallel.
-///
-/// The `execute_fn` should return the result of the tool call as a string and transfer
-/// ownership of the memory to the caller. The result will be passed to the LLM as the
-/// result of the tool call.
-pub fn init(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
-    if (comptime expectsContext(execute_fn)) {
-        @compileError("Tool function '" ++ descriptor.name ++ "' expects a context parameter. Use Tool.initWithContext instead.");
-    }
-    return initInternal(descriptor, execute_fn, null);
-}
-
-/// Creates a Tool from a descriptor, a function, and a provided context object.
-/// Tool calls will delegate to the provided function when called.
-///
-/// `descriptor` is the tool's descriptor defining the structure of the tool for the LLM.
-/// `execute_fn` is the function to be called when the tool is executed.
-/// `ctx` is a pointer that will be passed to the `execute_fn`.
-///
-/// The function arguments must match the descriptor parameters and be in the same order.
-/// The function should also take an allocator as an argument which will be used, at least,
-/// to allocate its result. The allocator can be in any position provided the other arguments
-/// are still in the same order as the parameters in the descriptor.
-///
-/// Additionally, the function can optionally accept an Io struct which represents the IO to use
-/// during the tool call, and/or a ToolCallContext struct.
-///
-/// The `execute_fn` should return the result of the tool call as a string and transfer
-/// ownership of the memory to the caller. The result will be passed to the LLM as the
-/// result of the tool call.
-pub fn initWithContext(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype, ctx: anytype) Tool {
-    if (comptime !expectsContext(execute_fn)) {
-        @compileError("Tool function '" ++ descriptor.name ++ "' does not take a context parameter. Use Tool.init instead.");
-    }
-    if (comptime !isContextType(@TypeOf(ctx))) {
-        @compileError("Context argument to Tool.initWithContext must be a pointer, got: " ++ @typeName(@TypeOf(ctx)));
-    }
-    return initInternal(descriptor, execute_fn, ctx);
-}
-
-fn initInternal(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype, ctx: anytype) Tool {
-    const CtxType: ?type = comptime if (@TypeOf(ctx) == @TypeOf(null)) null else @TypeOf(ctx);
-
-    var value = comptime blk: {
+/// Validates at compile time that the function parameters match the tool descriptor.
+/// Stateful tools that take `*const Tool` should use this function to populate
+/// their `VTable.execute`.
+pub fn wrapExecute(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) ToolExecuteFn {
+    return comptime blk: {
         for (descriptor.parameters, 0..) |p1, i| {
             for (descriptor.parameters, 0..) |p2, j| {
                 if (i != j and std.mem.eql(u8, p1.name, p2.name)) {
@@ -114,29 +104,58 @@ fn initInternal(comptime descriptor: llm.types.Tool, comptime execute_fn: anytyp
             }
         }
 
-        const res = makeExecuteFn(descriptor, execute_fn, CtxType);
-        break :blk Tool{
-            .descriptor = descriptor,
-            .execute_fn = switch (res) {
-                .ok => |f| f,
-                .err => |e| @compileError(e.msg),
-            },
-            .ctx = null,
+        const res = makeExecuteFn(descriptor, execute_fn);
+        break :blk switch (res) {
+            .ok => |f| f,
+            .err => |e| @compileError(e.msg),
         };
     };
+}
 
-    value.ctx = blk: {
-        if (comptime CtxType == null) break :blk null;
+/// Creates a Tool from a descriptor and a standalone function.
+/// Tool calls will delegate to the provided function when called.
+///
+/// `descriptor` is the tool's descriptor defining the structure of the tool for the LLM.
+/// `execute_fn` is the function to be called when the tool is executed.
+///
+/// The function arguments must match the descriptor parameters and be in the same order.
+/// The function should also take an allocator as an argument which will be used, at least,
+/// to allocate its result. The allocator can be in any position provided the other arguments
+/// are still in the same order as the parameters in the descriptor.
+///
+/// Additionally, the function can optionally accept an Io struct which represents the IO to use
+/// during the tool call and/or a ToolCallContext struct.
+/// The function MUST NOT accept a `*const Tool` or `*Tool` parameter. For tools with tool-level
+/// state, define a custom struct embedding `tool: Tool`, use `Tool.wrapExecute` in a `Tool.VTable`,
+/// and use `@fieldParentPtr`.
+/// The function MUST be thread-safe as multiple calls to the tool function can occur in parallel.
+///
+/// The `execute_fn` should return the result of the tool call as a string and transfer
+/// ownership of the memory to the caller. The result will be passed to the LLM as the
+/// result of the tool call.
+pub fn fromFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
+    if (comptime takesToolParam(@TypeOf(execute_fn))) {
+        @compileError("Tool.fromFn function '" ++ descriptor.name ++ "' cannot take a *const Tool or *Tool parameter. Construct a Tool with a VTable and Tool.wrapExecute instead.");
+    }
 
-        if (comptime @typeInfo(CtxType.?) == .optional) {
-            const ptr = ctx orelse break :blk null;
-            break :blk @ptrCast(@alignCast(@constCast(ptr)));
-        }
+    return comptime blk: {
+        const vtable: VTable = .{
+            .execute = wrapExecute(descriptor, execute_fn),
+            .deinit = null,
+        };
 
-        break :blk @ptrCast(@alignCast(@constCast(ctx)));
+        break :blk Tool{
+            .descriptor = descriptor,
+            .vtable = &vtable,
+        };
     };
+}
 
-    return value;
+/// Frees the resources associated with the tool.
+pub fn deinit(self: *Tool) void {
+    if (self.vtable.deinit) |deinit_fn| {
+        deinit_fn(self);
+    }
 }
 
 const ValidationError = error{
@@ -154,6 +173,25 @@ const ValidationResult = union(enum) {
         msg: []const u8,
     },
 };
+
+fn takesToolParam(comptime FnType: type) bool {
+    const fn_info = switch (@typeInfo(FnType)) {
+        .@"fn" => |info| info,
+        .pointer => |ptr_info| switch (@typeInfo(ptr_info.child)) {
+            .@"fn" => |info| info,
+            else => return false,
+        },
+        else => return false,
+    };
+    inline for (fn_info.params) |param| {
+        if (param.type) |T| {
+            if (T == *const Tool or T == *Tool) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 fn expectedTagForType(comptime T: type) ValidationError!struct { tag: std.meta.Tag(Argument.Value), required: bool } {
     var InputT = T;
@@ -211,74 +249,7 @@ inline fn findArgument(args: []const Argument, name: []const u8) ?*const Argumen
     return null;
 }
 
-/// Returns true if type `T` represents a valid context pointer type.
-/// A context pointer type is a single-item pointer (e.g. `*MyCtx`, `*const MyCtx`, `*anyopaque`)
-/// or an optional single-item pointer (e.g. `?*MyCtx`).
-fn isContextType(comptime T: type) bool {
-    if (T == ToolCallContext) return false;
-    return switch (@typeInfo(T)) {
-        .pointer => |ptr_info| ptr_info.size == .one,
-        .optional => |opt_info| switch (@typeInfo(opt_info.child)) {
-            .pointer => |ptr_info| ptr_info.size == .one,
-            else => false,
-        },
-        else => false,
-    };
-}
-
-/// Returns true if the provided context type `ProvidedCtx` can be passed to a tool parameter of type `ParamType`.
-/// Handles non-const to const pointer conversions, optional pointer unwrapping, and opaque pointer compatibility.
-inline fn isContextTypeCompatible(comptime ProvidedCtx: type, comptime ParamType: type) bool {
-    if (ParamType == *anyopaque or ParamType == ?*anyopaque or ParamType == *const anyopaque or ParamType == ?*const anyopaque) return true;
-    if (ProvidedCtx == ParamType) return true;
-
-    const UnwrappedProvided = switch (@typeInfo(ProvidedCtx)) {
-        .optional => |opt| opt.child,
-        else => ProvidedCtx,
-    };
-    const UnwrappedParam = switch (@typeInfo(ParamType)) {
-        .optional => |opt| opt.child,
-        else => ParamType,
-    };
-
-    if (UnwrappedProvided == UnwrappedParam) return true;
-
-    if (@typeInfo(UnwrappedProvided) == .pointer and @typeInfo(UnwrappedParam) == .pointer) {
-        const prov_ptr = @typeInfo(UnwrappedProvided).pointer;
-        const param_ptr = @typeInfo(UnwrappedParam).pointer;
-
-        if (prov_ptr.child == anyopaque or param_ptr.child == anyopaque) return true;
-
-        if (prov_ptr.child == param_ptr.child) {
-            if (param_ptr.is_const) return true;
-            return !prov_ptr.is_const;
-        }
-    }
-
-    return false;
-}
-
-/// Returns true if the function or function pointer `execute_fn` has at least one context parameter.
-fn expectsContext(comptime execute_fn: anytype) bool {
-    const FnType = @TypeOf(execute_fn);
-    const fn_info = switch (@typeInfo(FnType)) {
-        .@"fn" => |info| info,
-        .pointer => |ptr_info| switch (@typeInfo(ptr_info.child)) {
-            .@"fn" => |info| info,
-            else => return false,
-        },
-        else => return false,
-    };
-
-    inline for (fn_info.params) |param| {
-        if (param.type) |T| {
-            if (comptime isContextType(T)) return true;
-        }
-    }
-    return false;
-}
-
-fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype, comptime CtxType: ?type) ValidationResult {
+fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) ValidationResult {
     const FnType = @TypeOf(execute_fn);
     const fn_info = switch (@typeInfo(FnType)) {
         .@"fn" => |info| info,
@@ -303,17 +274,13 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
         for (fn_info.params, 0..) |fn_param, i| {
             result_types[i] = fn_param.type.?;
 
-            if (fn_param.type.? == Allocator or fn_param.type.? == Io or fn_param.type.? == ToolCallContext) {
+            if (fn_param.type.? == Allocator or fn_param.type.? == Io or fn_param.type.? == ToolCallContext or fn_param.type.? == *const Tool) {
                 // Environment parameter
-            } else if (isContextType(fn_param.type.?)) {
-                if (CtxType) |ProvidedCtxType| {
-                    if (!isContextTypeCompatible(ProvidedCtxType, fn_param.type.?)) {
-                        return .{ .err = .{
-                            .code = ValidationError.ArgumentTypeMismatch,
-                            .msg = "Tool function '" ++ descriptor.name ++ "' expects context parameter of type '" ++ @typeName(fn_param.type.?) ++ "', but got context of type '" ++ @typeName(ProvidedCtxType) ++ "'",
-                        } };
-                    }
-                }
+            } else if (fn_param.type.? == *Tool) {
+                return .{ .err = .{
+                    .code = ValidationError.UnsupportedType,
+                    .msg = "Tool execution function parameter cannot be '*Tool'. Use '*const Tool' instead, as tools receive immutable references during execution.",
+                } };
             } else {
                 if (param_idx >= descriptor_params.len) {
                     return .{ .err = .{ .code = ValidationError.ArgumentCountMismatch, .msg = "More arguments in function than descriptor." } };
@@ -341,7 +308,7 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
     const TupleType = @Tuple(&types);
     return .{
         .ok = struct {
-            pub fn call(allocator: Allocator, io: Io, call_ctx: ToolCallContext, ctx: ?*anyopaque, input_args: []const Argument) CallError![]const u8 {
+            pub fn call(tool: *const Tool, allocator: Allocator, io: Io, call_ctx: ToolCallContext, input_args: []const Argument) CallError![]const u8 {
                 var args: TupleType = undefined;
                 comptime var descriptor_idx: usize = 0;
                 inline for (0..fn_info.params.len) |func_idx| {
@@ -352,12 +319,8 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
                         args[func_idx] = io;
                     } else if (comptime T == ToolCallContext) {
                         args[func_idx] = call_ctx;
-                    } else if (comptime (CtxType != null and isContextTypeCompatible(CtxType.?, T))) {
-                        if (comptime @typeInfo(T) == .optional) {
-                            args[func_idx] = if (ctx) |c| @ptrCast(@alignCast(c)) else null;
-                        } else {
-                            args[func_idx] = @ptrCast(@alignCast(ctx.?));
-                        }
+                    } else if (comptime T == *const Tool) {
+                        args[func_idx] = tool;
                     } else {
                         const curr_descriptor = comptime descriptor.parameters[descriptor_idx];
                         descriptor_idx += 1;
@@ -386,7 +349,18 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
     };
 }
 
-test init {
+test takesToolParam {
+    const S = struct {
+        fn fConstTool(_: *const Tool) void {}
+        fn fTool(_: *Tool) void {}
+        fn fStateless(_: Allocator, _: i64) void {}
+    };
+    try std.testing.expect(takesToolParam(@TypeOf(S.fConstTool)));
+    try std.testing.expect(takesToolParam(@TypeOf(S.fTool)));
+    try std.testing.expect(!takesToolParam(@TypeOf(S.fStateless)));
+}
+
+test fromFn {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var session_state = SessionState.init(allocator);
@@ -415,7 +389,7 @@ test init {
             return try std.fmt.allocPrint(allocator, "{d}{s}", .{ arg1, arg2 });
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.example_function);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.example_function);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 12 } },
@@ -430,7 +404,7 @@ test init {
     try std.testing.expectEqualStrings("12hello", result.result);
 }
 
-test initWithContext {
+test "stateful tool with @fieldParentPtr" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var session_state = SessionState.init(allocator);
@@ -454,22 +428,33 @@ test initWithContext {
             },
         },
     };
-    const CtxStruct = struct { prefix: []const u8 };
-    var ctx_obj: CtxStruct = .{ .prefix = "ctx-" };
+    const StatefulTool = struct {
+        tool: Tool,
+        prefix: []const u8,
 
-    const tool_impl = struct {
-        pub fn example_context_function(_: Allocator, arg1: i64, arg2: []const u8, ctx: *CtxStruct) ![]const u8 {
-            return try std.fmt.allocPrint(allocator, "{s}{d}{s}", .{ ctx.prefix, arg1, arg2 });
+        const vtable: Tool.VTable = .{
+            .execute = Tool.wrapExecute(tool_descriptor, run),
+        };
+
+        fn run(tool: *const Tool, alloc: Allocator, arg1: i64, arg2: []const u8) ![]const u8 {
+            const self: *const @This() = @fieldParentPtr("tool", tool);
+            return try std.fmt.allocPrint(alloc, "{s}{d}{s}", .{ self.prefix, arg1, arg2 });
         }
     };
-    const tool = initWithContext(tool_descriptor, tool_impl.example_context_function, &ctx_obj);
+    const stateful_tool = StatefulTool{
+        .tool = .{
+            .descriptor = tool_descriptor,
+            .vtable = &StatefulTool.vtable,
+        },
+        .prefix = "ctx-",
+    };
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 12 } },
         .{ .name = "arg2", .value = .{ .string = "hello" } },
     };
 
-    var result = try tool.execute(allocator, io, &session_state, "123", &args);
+    var result = try stateful_tool.tool.execute(allocator, io, &session_state, "123", &args);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("example_context_function", result.tool_name);
@@ -483,7 +468,7 @@ test "makeExecuteFn - ExpectedFunctionOrPointer" {
         .description = "desc",
         .parameters = &.{},
     };
-    const res = comptime makeExecuteFn(desc, 42, null);
+    const res = comptime makeExecuteFn(desc, 42);
     try std.testing.expectEqual(ValidationError.ExpectedFunctionOrPointer, res.err.code);
 }
 
@@ -505,7 +490,7 @@ test "makeExecuteFn - ArgumentTypeMismatch" {
             return arg1;
         }
     };
-    const res = comptime makeExecuteFn(desc, Impl.run, null);
+    const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expectEqual(ValidationError.ArgumentTypeMismatch, res.err.code);
     try std.testing.expectEqualStrings("Argument type mismatch in tool test_tool for argument arg1: expected i64 but got []const u8", res.err.msg);
 }
@@ -522,7 +507,7 @@ test "makeExecuteFn - ArgumentCountMismatch (too many arguments)" {
             return "";
         }
     };
-    const res = comptime makeExecuteFn(desc, Impl.run, null);
+    const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expectEqual(ValidationError.ArgumentCountMismatch, res.err.code);
     try std.testing.expectEqualStrings("More arguments in function than descriptor.", res.err.msg);
 }
@@ -545,7 +530,7 @@ test "makeExecuteFn - ArgumentCountMismatch (too few arguments)" {
             return "";
         }
     };
-    const res = comptime makeExecuteFn(desc, Impl.run, null);
+    const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expectEqual(ValidationError.ArgumentCountMismatch, res.err.code);
     try std.testing.expectEqualStrings("Fewer arguments in function than descriptor.", res.err.msg);
 }
@@ -569,7 +554,7 @@ test "makeExecuteFn - ParamTypeArrayNotSupported" {
             return arg1;
         }
     };
-    const res = comptime makeExecuteFn(desc, Impl.run, null);
+    const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expectEqual(ValidationError.UnsupportedType, res.err.code);
     try std.testing.expectEqualStrings("Failed to resolve type from descriptor (tool: test_tool, param: arg1)", res.err.msg);
 }
@@ -593,7 +578,7 @@ test "makeExecuteFn - ReturnTypeMismatch" {
             return 10;
         }
     };
-    const res = comptime makeExecuteFn(desc, Impl.run, null);
+    const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expectEqual(ValidationError.ReturnTypeMismatch, res.err.code);
     try std.testing.expectEqualStrings("Function return type must be a string.", res.err.msg);
 }
@@ -617,7 +602,7 @@ test "makeExecuteFn - argument optionals OK" {
             return "";
         }
     };
-    const res = comptime makeExecuteFn(desc, Impl.run, null);
+    const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expect(res == .ok);
 }
 
@@ -639,7 +624,7 @@ test "makeExecuteFn - argument optional in descriptor, required in fn" {
             return required;
         }
     };
-    const res = comptime makeExecuteFn(desc, Impl.run, null);
+    const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expectEqual(ValidationError.ArgumentTypeMismatch, res.err.code);
     try std.testing.expectEqualStrings("Argument type mismatch in tool test_tool for argument arg1: expected ?[]const u8 but got []const u8", res.err.msg);
 }
@@ -663,7 +648,7 @@ test "makeExecuteFn - argument required in descriptor, optional in fn" {
             return "";
         }
     };
-    const res = comptime makeExecuteFn(desc, Impl.run, null);
+    const res = comptime makeExecuteFn(desc, Impl.run);
     try std.testing.expectEqual(ValidationError.ArgumentTypeMismatch, res.err.code);
     try std.testing.expectEqualStrings("Argument type mismatch in tool test_tool for argument arg1: expected []const u8 but got ?[]const u8", res.err.msg);
 }
@@ -691,7 +676,7 @@ test execute {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "arg1",
@@ -729,7 +714,7 @@ test "execute - unknown argument" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "unknown",
@@ -762,7 +747,7 @@ test "execute - extra argument ignored" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "arg1",
@@ -801,7 +786,7 @@ test "execute - missing required argument" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{};
     try std.testing.expectError(CallError.RequiredArgumentMissing, tool.execute(testing_allocator, io, &session_state, "id", args));
 }
@@ -830,7 +815,7 @@ test "execute - missing optional argument" {
             return allocator.dupe(u8, "default");
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{};
     var result = try tool.execute(testing_allocator, io, &session_state, "id", args);
     defer result.deinit();
@@ -864,7 +849,7 @@ test "execute - optional argument provided" {
             return allocator.dupe(u8, "default");
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{ .name = "arg1", .value = .{ .string = "provided" } },
     };
@@ -899,7 +884,7 @@ test "execute - argument type mismatch" {
             return try allocator.dupe(u8, arg1);
         }
     };
-    const tool = Tool.init(desc, Impl.run);
+    const tool = Tool.fromFn(desc, Impl.run);
     const args: []const Argument = &.{
         .{
             .name = "arg1",
@@ -932,7 +917,7 @@ test "execute - no Allocator parameter" {
             return allocator.dupe(u8, arg1);
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.no_allocator_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.no_allocator_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .string = "hello" } },
@@ -975,7 +960,7 @@ test "execute - Allocator as middle/last parameter" {
             return try std.fmt.allocPrint(tool_allocator, "middle-{d}-{s}", .{ arg1, arg2 });
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.middle_last_allocator_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.middle_last_allocator_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 99 } },
@@ -1014,7 +999,7 @@ test "execute - multiple Allocator parameters" {
             return try std.fmt.allocPrint(alloc1, "multi-{d}", .{arg1});
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.multi_allocator_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.multi_allocator_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 7 } },
@@ -1052,7 +1037,7 @@ test "execute - Io parameter" {
             return try std.fmt.allocPrint(tool_allocator, "io-{s}", .{arg1});
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.io_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.io_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .string = "test" } },
@@ -1091,7 +1076,7 @@ test "execute - multiple Io parameters" {
             return try std.fmt.allocPrint(tool_allocator, "multi-io-{d}", .{arg1});
         }
     };
-    const tool = comptime init(tool_descriptor, tool_impl.multi_io_func);
+    const tool = comptime fromFn(tool_descriptor, tool_impl.multi_io_func);
 
     const args = [_]Argument{
         .{ .name = "arg1", .value = .{ .integer = 77 } },
@@ -1105,181 +1090,32 @@ test "execute - multiple Io parameters" {
     try std.testing.expectEqualStrings("multi-io-77", result.result);
 }
 
-test expectsContext {
-    const ImplNoCtx = struct {
-        pub fn run(_: Allocator, _: i64) ![]const u8 {
-            return "";
-        }
-    };
-    const ImplWithCtx = struct {
-        pub fn run(_: Allocator, _: i64, _: *anyopaque) ![]const u8 {
-            return "";
-        }
-    };
-    const CtxStruct = struct { val: u32 };
-    const ImplWithTypedCtx = struct {
-        pub fn run(_: Allocator, _: i64, _: *CtxStruct) ![]const u8 {
-            return "";
-        }
-    };
-    const ImplWithCallContext = struct {
-        pub fn run(_: Allocator, _: ToolCallContext, _: i64) ![]const u8 {
-            return "";
-        }
-    };
-    try std.testing.expect(!expectsContext(ImplNoCtx.run));
-    try std.testing.expect(expectsContext(ImplWithCtx.run));
-    try std.testing.expect(expectsContext(ImplWithTypedCtx.run));
-    try std.testing.expect(!expectsContext(ImplWithCallContext.run));
-}
-
-test "execute - has context" {
+test "execute - inject *const Tool with wrapExecute" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     var session_state = SessionState.init(allocator);
     defer session_state.deinit();
 
-    const tool_descriptor: llm.types.Tool = .{
-        .name = "ctx_func",
-        .description = "Takes context and arguments",
-        .parameters = &.{
-            .{
-                .name = "arg1",
-                .description = "The first argument",
-                .type = .string,
-                .required = true,
-            },
-        },
+    const desc: llm.types.Tool = .{
+        .name = "tool_ptr_test",
+        .description = "desc",
+        .parameters = &.{},
     };
-    const CtxStruct = struct { prefix: []const u8 };
-    var ctx_obj: CtxStruct = .{ .prefix = "ctx-hello-" };
-
-    const tool_impl = struct {
-        pub fn ctx_func(tool_allocator: Allocator, arg1: []const u8, ctx: *CtxStruct) ![]const u8 {
-            return try std.fmt.allocPrint(tool_allocator, "{s}{s}", .{ ctx.prefix, arg1 });
+    const Impl = struct {
+        fn run(tool: *const Tool, alloc: Allocator) ![]const u8 {
+            return try alloc.dupe(u8, tool.descriptor.name);
         }
     };
-
-    const tool = initWithContext(tool_descriptor, tool_impl.ctx_func, &ctx_obj);
-
-    const args = [_]Argument{
-        .{ .name = "arg1", .value = .{ .string = "world" } },
+    const vtable: Tool.VTable = .{
+        .execute = Tool.wrapExecute(desc, Impl.run),
     };
-
-    var result = try tool.execute(allocator, io, &session_state, "ctx-id", &args);
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ctx_func", result.tool_name);
-    try std.testing.expectEqualStrings("ctx-id", result.id);
-    try std.testing.expectEqualStrings("ctx-hello-world", result.result);
-}
-
-test "execute - const and optional context pointers" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-    var session_state = SessionState.init(allocator);
-    defer session_state.deinit();
-
-    const tool_descriptor: llm.types.Tool = .{
-        .name = "const_ctx_func",
-        .description = "Takes const and optional context pointers",
-        .parameters = &.{
-            .{
-                .name = "val",
-                .type = .integer,
-                .required = true,
-                .description = "val",
-            },
-        },
+    const tool = Tool{
+        .descriptor = desc,
+        .vtable = &vtable,
     };
-
-    const CtxStruct = struct { factor: i64 };
-    const const_ctx_obj: CtxStruct = .{ .factor = 10 };
-    var mut_ctx_obj: CtxStruct = .{ .factor = 10 };
-
-    const tool_impl = struct {
-        pub fn const_ctx_func(tool_allocator: Allocator, val: i64, ctx: *const CtxStruct) ![]const u8 {
-            return try std.fmt.allocPrint(tool_allocator, "{d}", .{val * ctx.factor});
-        }
-        pub fn optional_ctx_func(tool_allocator: Allocator, val: i64, ctx: ?*const CtxStruct) ![]const u8 {
-            const factor = if (ctx) |c| c.factor else 1;
-            return try std.fmt.allocPrint(tool_allocator, "{d}", .{val * factor});
-        }
-    };
-
-    const args = [_]Argument{.{ .name = "val", .value = .{ .integer = 5 } }};
-
-    // const -> const
-    const tool_const1 = initWithContext(tool_descriptor, tool_impl.const_ctx_func, &const_ctx_obj);
-    var res_const1 = try tool_const1.execute(allocator, io, &session_state, "id1", &args);
-    defer res_const1.deinit();
-    try std.testing.expectEqualStrings("50", res_const1.result);
-
-    // non-const -> const
-    const tool_const2 = initWithContext(tool_descriptor, tool_impl.const_ctx_func, &mut_ctx_obj);
-    var res_const2 = try tool_const2.execute(allocator, io, &session_state, "id2", &args);
-    defer res_const2.deinit();
-    try std.testing.expectEqualStrings("50", res_const2.result);
-
-    // const -> optional const
-    const tool_opt1 = initWithContext(tool_descriptor, tool_impl.optional_ctx_func, &const_ctx_obj);
-    var res_opt1 = try tool_opt1.execute(allocator, io, &session_state, "id3", &args);
-    defer res_opt1.deinit();
-    try std.testing.expectEqualStrings("50", res_opt1.result);
-
-    // non-const -> optional const
-    const tool_opt2 = initWithContext(tool_descriptor, tool_impl.optional_ctx_func, &mut_ctx_obj);
-    var res_opt2 = try tool_opt2.execute(allocator, io, &session_state, "id4", &args);
-    defer res_opt2.deinit();
-    try std.testing.expectEqualStrings("50", res_opt2.result);
-}
-
-test "execute - multiple context pointers" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-    var session_state = SessionState.init(allocator);
-    defer session_state.deinit();
-
-    const tool_descriptor: llm.types.Tool = .{
-        .name = "multi_ctx_func",
-        .description = "Takes multiple context parameters of the same type",
-        .parameters = &.{
-            .{
-                .name = "val",
-                .type = .integer,
-                .required = true,
-                .description = "val",
-            },
-        },
-    };
-
-    const CtxStruct = struct { factor: i64 };
-    var ctx_obj: CtxStruct = .{ .factor = 7 };
-
-    const tool_impl = struct {
-        pub fn multi_ctx_func(tool_allocator: Allocator, ctx1: *CtxStruct, val: i64, ctx2: *CtxStruct) ![]const u8 {
-            return try std.fmt.allocPrint(tool_allocator, "{d}", .{val + ctx1.factor + ctx2.factor});
-        }
-    };
-
-    const tool = initWithContext(tool_descriptor, tool_impl.multi_ctx_func, &ctx_obj);
-    const args = [_]Argument{.{ .name = "val", .value = .{ .integer = 10 } }};
-
-    var res = try tool.execute(allocator, io, &session_state, "id_multi", &args);
+    var res = try tool.execute(allocator, io, &session_state, "id", &.{});
     defer res.deinit();
-    try std.testing.expectEqualStrings("24", res.result);
-}
-
-test isContextTypeCompatible {
-    const Foo = struct { val: u32 };
-    const Bar = struct { val: u32 };
-    try std.testing.expect(isContextTypeCompatible(*Foo, *Foo));
-    try std.testing.expect(isContextTypeCompatible(*Foo, *const Foo));
-    try std.testing.expect(isContextTypeCompatible(*Foo, ?*Foo));
-    try std.testing.expect(isContextTypeCompatible(*Foo, *anyopaque));
-    try std.testing.expect(isContextTypeCompatible(*anyopaque, *Foo));
-    try std.testing.expect(!isContextTypeCompatible(*Foo, *Bar));
-    try std.testing.expect(!isContextTypeCompatible(*const Foo, *Foo));
+    try std.testing.expectEqualStrings("tool_ptr_test", res.result);
 }
 
 test "execute with ToolCallContext" {
@@ -1322,7 +1158,7 @@ test "execute with ToolCallContext" {
 
     const args = [_]Argument{.{ .name = "increment", .value = .{ .integer = 5 } }};
 
-    const tool_inc = init(tool_descriptor, tool_impl.increment);
+    const tool_inc = fromFn(tool_descriptor, tool_impl.increment);
     var res1 = try tool_inc.execute(allocator, io, &session_state, "id1", &args);
     defer res1.deinit();
     try std.testing.expectEqualStrings("Count: 5", res1.result);
@@ -1331,8 +1167,124 @@ test "execute with ToolCallContext" {
     defer res2.deinit();
     try std.testing.expectEqualStrings("Count: 10", res2.result);
 
-    const tool_read = init(tool_descriptor, tool_impl.read_const);
+    const tool_read = fromFn(tool_descriptor, tool_impl.read_const);
     var res3 = try tool_read.execute(allocator, io, &session_state, "id3", &args);
     defer res3.deinit();
     try std.testing.expectEqualStrings("ConstCount: 15", res3.result);
+}
+
+test "custom VTable implementation" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
+
+    const desc: llm.types.Tool = .{
+        .name = "custom_vtable_tool",
+        .description = "desc",
+        .parameters = &.{},
+    };
+
+    const CustomTool = struct {
+        tool: Tool,
+        calls: *std.atomic.Value(usize),
+        deinited: *bool,
+
+        const vtable: Tool.VTable = .{
+            .execute = executeFn,
+            .deinit = deinitFn,
+        };
+
+        fn initTool(self: *@This(), calls: *std.atomic.Value(usize), deinited: *bool) void {
+            self.* = .{
+                .tool = .{
+                    .descriptor = desc,
+                    .vtable = &vtable,
+                },
+                .calls = calls,
+                .deinited = deinited,
+            };
+        }
+
+        fn executeFn(tool: *const Tool, alloc: Allocator, _: Io, _: ToolCallContext, _: []const Argument) Tool.CallError![]const u8 {
+            const self: *const @This() = @fieldParentPtr("tool", tool);
+            _ = self.calls.fetchAdd(1, .monotonic);
+            return try alloc.dupe(u8, "custom vtable called");
+        }
+
+        fn deinitFn(tool: *Tool) void {
+            const self: *const @This() = @fieldParentPtr("tool", tool);
+            self.deinited.* = true;
+        }
+    };
+
+    var calls = std.atomic.Value(usize).init(0);
+    var deinited = false;
+    var custom: CustomTool = undefined;
+    custom.initTool(&calls, &deinited);
+
+    var res = try custom.tool.execute(allocator, io, &session_state, "id_vtable", &.{});
+    defer res.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), calls.load(.monotonic));
+    try std.testing.expectEqualStrings("custom vtable called", res.result);
+
+    try std.testing.expect(!deinited);
+    custom.tool.deinit();
+    try std.testing.expect(deinited);
+}
+
+test "makeExecuteFn rejects *Tool parameter" {
+    const desc: llm.types.Tool = .{
+        .name = "mut_tool_test",
+        .description = "desc",
+        .parameters = &.{},
+    };
+    const Impl = struct {
+        fn run(_: *Tool) ![]const u8 {
+            return "";
+        }
+    };
+    const res = comptime makeExecuteFn(desc, Impl.run);
+    try std.testing.expectEqual(ValidationError.UnsupportedType, res.err.code);
+    try std.testing.expectEqualStrings("Tool execution function parameter cannot be '*Tool'. Use '*const Tool' instead, as tools receive immutable references during execution.", res.err.msg);
+}
+
+test "Tool.deinit on Tool.fromFn is safe no-op" {
+    const descriptor: llm.types.Tool = .{
+        .name = "test_init_deinit",
+        .description = "test init deinit",
+        .parameters = &.{},
+    };
+    const tool_impl = struct {
+        pub fn run(_: Allocator) ![]const u8 {
+            return "";
+        }
+    };
+
+    var tool = Tool.fromFn(descriptor, tool_impl.run);
+    tool.deinit();
+}
+
+test "Tool propagates error.Canceled on execution" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var session_state = SessionState.init(allocator);
+    defer session_state.deinit();
+
+    const descriptor: llm.types.Tool = .{
+        .name = "test_canceled_tool",
+        .description = "tool returning error.Canceled",
+        .parameters = &.{},
+    };
+    const tool_impl = struct {
+        pub fn run(_: Allocator) (Allocator.Error || std.Io.Cancelable)![]const u8 {
+            return error.Canceled;
+        }
+    };
+
+    var tool = Tool.fromFn(descriptor, tool_impl.run);
+    defer tool.deinit();
+
+    try std.testing.expectError(error.Canceled, tool.execute(allocator, io, &session_state, "id_cancel", &.{}));
 }

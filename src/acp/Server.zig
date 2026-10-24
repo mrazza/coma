@@ -30,7 +30,7 @@ pub const AcpProtocolError = error{
 
 /// Internal context payload passed to session streaming callbacks.
 const ServerSessionContext = struct {
-    session_state: *SessionStorage.SessionState,
+    session_state: *const SessionStorage.SessionState,
     json_rpc_writer: *JsonRpcWriter,
     allocator: Allocator,
     io: Io,
@@ -140,13 +140,13 @@ fn checkClientRequestValid(request: client_api.ClientRequest) AcpProtocolError!v
 
 /// Callback handler for streaming turn updates, converting agent streaming chunks into JSON-RPC notifications.
 fn handleTurnUpdate(ctx: ?*anyopaque, chunk: agent.types.StreamingChunk) void {
-    const stream_ctx: *ServerSessionContext = @ptrCast(@alignCast(ctx));
+    const stream_ctx: *const ServerSessionContext = @ptrCast(@alignCast(ctx));
     const notification = converter.streamingChunkToNotification(stream_ctx.allocator, stream_ctx.session_state.id, chunk) catch return orelse return;
     stream_ctx.json_rpc_writer.writeJsonObject(stream_ctx.io, notification, .{ .use_headers = false }) catch {};
 }
 
 /// Formats and writes a JSON-RPC error response using the provided JSON-RPC writer.
-fn sendError(self: *Server, writer: *JsonRpcWriter, id: shared_api.RequestId, code: agent_api.JsonRpcErrorCode, message: []const u8) !void {
+fn sendError(self: *const Server, writer: *JsonRpcWriter, id: shared_api.RequestId, code: agent_api.JsonRpcErrorCode, message: []const u8) !void {
     try writer.writeJsonObject(self.io, agent_api.AgentErrorResponse{
         .id = id,
         .@"error" = .{
@@ -157,7 +157,7 @@ fn sendError(self: *Server, writer: *JsonRpcWriter, id: shared_api.RequestId, co
 }
 
 /// Handles `initialize` request negotiation and writes JSON-RPC `initialize` response.
-fn handleInitialize(self: *Server, writer: *JsonRpcWriter, id: shared_api.RequestId, params: client_api.InitializeRequest) !void {
+fn handleInitialize(self: *const Server, writer: *JsonRpcWriter, id: shared_api.RequestId, params: client_api.InitializeRequest) !void {
     _ = params;
     const reply: agent_api.AgentResponse = .{
         .id = id,
@@ -202,7 +202,7 @@ fn handleSessionNew(self: *Server, writer: *JsonRpcWriter, id: shared_api.Reques
 /// Wrapper for `handleSessionPrompt` that allows it to be called from the main async loop.
 ///
 /// Takes ownership of `parse_result`, deinit-ing it upon completion.
-fn handleSessionPromptFireAndForget(self: *Server, writer: *JsonRpcWriter, parse_result: std.json.Parsed(client_api.ClientRequest)) Io.Cancelable!void {
+fn handleSessionPromptFireAndForget(self: *const Server, writer: *JsonRpcWriter, parse_result: std.json.Parsed(client_api.ClientRequest)) Io.Cancelable!void {
     defer parse_result.deinit();
     const client_request = parse_result.value;
     self.handleSessionPrompt(writer, client_request.id, client_request.params.session_prompt) catch |err| {
@@ -215,7 +215,7 @@ fn handleSessionPromptFireAndForget(self: *Server, writer: *JsonRpcWriter, parse
 /// TODO(razza): This method currently assume that only one prompt will ever be active for a given session at a time.
 /// This gurantee does not exist. We should either buffer the prompts or block/lock waiting to acquire exclusive access
 /// to the session.
-fn handleSessionPrompt(self: *Server, writer: *JsonRpcWriter, id: shared_api.RequestId, params: client_api.PromptRequest) !void {
+fn handleSessionPrompt(self: *const Server, writer: *JsonRpcWriter, id: shared_api.RequestId, params: client_api.PromptRequest) !void {
     const prompt_blocks = params.prompt;
     if (prompt_blocks.len == 0) {
         try self.sendError(writer, id, .invalid_params, "Prompt array cannot be empty");
@@ -339,9 +339,9 @@ test "Server prompt handling - multiple items in prompt array" {
     defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
-    const step_result = testing.MockProvider.stepResult(&.{.{ .text = "Response text" }}, &.{}, &.{});
+    var step_result = testing.MockProvider.stepResult(&.{.{ .text = "Response text" }}, &.{}, &.{});
     const outcomes = [_](llm.Provider.ProviderError!llm.types.StepOutcome){
-        .{ .result = step_result, .continuation = testing.MockProvider.stepContinuation() },
+        .{ .result = &step_result, .continuation = testing.MockProvider.stepContinuation() },
     };
     mock_provider.execute_step_results = &outcomes;
 

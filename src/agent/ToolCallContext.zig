@@ -52,7 +52,7 @@ test setInjectedContext {
     var session_state = SessionState.init(std.testing.allocator);
     defer session_state.deinit();
 
-    const tool = Tool.init(.{
+    const tool = Tool.fromFn(.{
         .name = "dummy_tool",
         .description = "A dummy tool",
         .parameters = &.{},
@@ -75,7 +75,7 @@ test clearInjectedContext {
     var session_state = SessionState.init(std.testing.allocator);
     defer session_state.deinit();
 
-    const tool = Tool.init(.{
+    const tool = Tool.fromFn(.{
         .name = "dummy_tool",
         .description = "A dummy tool",
         .parameters = &.{},
@@ -101,7 +101,7 @@ test getInjectedContext {
     var session_state = SessionState.init(std.testing.allocator);
     defer session_state.deinit();
 
-    const tool = Tool.init(.{
+    const tool = Tool.fromFn(.{
         .name = "dummy_tool",
         .description = "A dummy tool",
         .parameters = &.{},
@@ -126,7 +126,7 @@ test getOrInitState {
     var session_state = SessionState.init(std.testing.allocator);
     defer session_state.deinit();
 
-    const tool = Tool.init(.{
+    const tool = Tool.fromFn(.{
         .name = "dummy_tool",
         .description = "A dummy tool",
         .parameters = &.{},
@@ -156,7 +156,7 @@ test getState {
     var session_state = SessionState.init(std.testing.allocator);
     defer session_state.deinit();
 
-    const tool = Tool.init(.{
+    const tool = Tool.fromFn(.{
         .name = "dummy_tool",
         .description = "A dummy tool",
         .parameters = &.{},

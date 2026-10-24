@@ -58,17 +58,15 @@ pub const ListModelsResult = struct {
     /// The list of available models.
     models: []const Model,
 
-    ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
-        deinit: *const fn (ptr: *anyopaque) void,
+        deinit: *const fn (self: *ListModelsResult) void,
     };
 
     /// Frees the resources associated with the ListModelsResult.
     pub fn deinit(self: *ListModelsResult) void {
-        self.vtable.deinit(self.ptr);
-        self.* = undefined;
+        self.vtable.deinit(self);
     }
 };
 
@@ -102,7 +100,7 @@ pub const ToolCall = struct {
     /// The name of the tool to be called.
     name: []const u8,
     /// The arguments provided for the tool call.
-    arguments: []Argument,
+    arguments: []const Argument,
 };
 
 /// The result of executing a step (interaction) with the LLM.
@@ -115,42 +113,38 @@ pub const StepResult = struct {
     /// A list of tool calls requested by the model.
     tool_calls: []const ToolCall,
 
-    ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
-        deinit: *const fn (ptr: *anyopaque) void,
+        deinit: *const fn (self: *StepResult) void,
     };
 
     /// Frees the resources associated with the StepResult.
     pub fn deinit(self: *StepResult) void {
-        self.vtable.deinit(self.ptr);
-        self.* = undefined;
+        self.vtable.deinit(self);
     }
 };
 
 /// Represents information required to continue an interaction with an LLM.
 pub const StepContinuation = struct {
-    ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
-        deinit: *const fn (ptr: *anyopaque) void,
+        deinit: *const fn (self: *StepContinuation) void,
     };
 
     /// Frees the resources associated with the StepContinuation.
     pub fn deinit(self: *StepContinuation) void {
-        self.vtable.deinit(self.ptr);
-        self.* = undefined;
+        self.vtable.deinit(self);
     }
 };
 
 /// Represents the outcome of executing a single interaction step with the LLM.
 pub const StepOutcome = struct {
     /// The result of the step execution containing generated outputs, thoughts, and tool calls.
-    result: StepResult,
+    result: *StepResult,
     /// The continuation required to maintain conversation state for subsequent steps.
-    continuation: StepContinuation,
+    continuation: *StepContinuation,
 };
 
 /// Represents a single input step to the LLM.
