@@ -177,7 +177,7 @@ pub fn main(init: std.process.Init) !void {
     defer typescript_tool.deinit();
     defer weather_tool.tool.deinit();
 
-    const session_config: types.SessionConfig = .{ .model = selected_model.?, .tools = &tools, .system_prompt = "You're a helpful agent. The user can ask you questions and you can use your tools to answer them. When receiving a new request from the user, plan out how you will address the request and document the steps on your Todo list. Keep the todo list updated as you progress and remove completed todo steps if they're not longer relevant." };
+    const session_config: types.SessionConfig = .{ .model = selected_model.?, .tools = &tools, .system_prompt = "You're a helpful agent. The user can ask you questions and you can use your tools to answer them. When receiving a new request from the user, plan out how you will address the request and document the steps on your Todo list. Keep the todo list updated as you progress and remove completed todo steps if they are no longer relevant." };
 
     const args = try init.minimal.args.toSlice(allocator);
     defer allocator.free(args);

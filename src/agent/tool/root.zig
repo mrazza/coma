@@ -10,4 +10,3 @@ test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(@import("shell.zig"));
 }
-

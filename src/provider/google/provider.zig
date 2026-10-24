@@ -839,7 +839,7 @@ test "Gemini.executeStepStreaming success" {
                                     if (tc.arguments.len > 0) {
                                         std.testing.expectEqualStrings("location", tc.arguments[0].name) catch {};
                                         if (std.mem.eql(u8, tc.arguments[0].value.string, "San Francisco")) {
-                                             self.tool_call_arguments_received = true;
+                                            self.tool_call_arguments_received = true;
                                         }
                                     }
                                 },
