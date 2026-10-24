@@ -23,6 +23,31 @@ pub const CallError = error{
     ArgumentMismatch,
 } || std.mem.Allocator.Error;
 
+/// Intrusive interface representing a tool an Agent can call.
+///
+/// Implementations must embed `Tool` directly as a field in their enclosing struct and implement
+/// the methods specified in `Tool.VTable`.
+///
+/// **Pointer Stability & Memory Safety:**
+/// Implementations recover the outer struct reference using `@fieldParentPtr("tool", self)` inside
+/// VTable function callbacks. Because this relies on fixed relative memory offsets, the enclosing struct
+/// instance MUST NOT be copied by value or relocated in memory once a pointer to its embedded `Tool`
+/// has been passed to a Session or another consumer.
+///
+/// **Thread Safety & Mutable State:**
+/// Tools receive immutable `*const Tool` references during execution. Execution methods can be called
+/// concurrently by parallel turns or simultaneous tool invocations within a single turn (e.g. via `Io.Select`).
+/// Implementations should avoid casting away const-ness with `@constCast`, as doing so obscures mutability
+/// and can cause undefined behavior if the tool instance is declared `const` (e.g. in read-only memory).
+///
+/// To manage mutable state cleanly without `@constCast`:
+/// 1. **Session-scoped state:** Use `ToolCallContext.getOrInitState` to store state inside `SessionState`.
+///    This isolates state to the active session (avoiding cross-session leakage). Note that multiple tool
+///    calls within a single turn can execute concurrently, so any shared state accessed simultaneously
+///    still requires appropriate synchronization (e.g., atomics or a mutex).
+/// 2. **Tool-scoped mutable objects (Clients, Pools, Atomics):** Store a pointer to the mutable object
+///    (e.g., `client: *HttpClient`, `state: *SharedState`). Because Zig's `const` is shallow, accessing
+///    a pointer field through `*const Tool` yields a mutable pointer (`*T`) with zero `@constCast`.
 const Tool = @This();
 
 pub const ToolExecuteFn = *const fn (
@@ -110,7 +135,7 @@ pub fn wrapExecute(comptime descriptor: llm.types.Tool, comptime execute_fn: any
 /// result of the tool call.
 pub fn fromFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anytype) Tool {
     if (comptime takesToolParam(@TypeOf(execute_fn))) {
-        @compileError("Tool.fromFn function '" ++ descriptor.name ++ "' cannot take a *Tool parameter. Construct a Tool with a VTable and Tool.wrapExecute instead.");
+        @compileError("Tool.fromFn function '" ++ descriptor.name ++ "' cannot take a *const Tool or *Tool parameter. Construct a Tool with a VTable and Tool.wrapExecute instead.");
     }
 
     return comptime blk: {
@@ -251,6 +276,11 @@ fn makeExecuteFn(comptime descriptor: llm.types.Tool, comptime execute_fn: anyty
 
             if (fn_param.type.? == Allocator or fn_param.type.? == Io or fn_param.type.? == ToolCallContext or fn_param.type.? == *const Tool) {
                 // Environment parameter
+            } else if (fn_param.type.? == *Tool) {
+                return .{ .err = .{
+                    .code = ValidationError.UnsupportedType,
+                    .msg = "Tool execution function parameter cannot be '*Tool'. Use '*const Tool' instead, as tools receive immutable references during execution.",
+                } };
             } else {
                 if (param_idx >= descriptor_params.len) {
                     return .{ .err = .{ .code = ValidationError.ArgumentCountMismatch, .msg = "More arguments in function than descriptor." } };
@@ -1088,7 +1118,6 @@ test "execute - inject *const Tool with wrapExecute" {
     try std.testing.expectEqualStrings("tool_ptr_test", res.result);
 }
 
-
 test "execute with ToolCallContext" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -1158,45 +1187,67 @@ test "custom VTable implementation" {
 
     const CustomTool = struct {
         tool: Tool,
-        calls: usize = 0,
-        deinited: bool = false,
+        calls: *std.atomic.Value(usize),
+        deinited: *bool,
 
         const vtable: Tool.VTable = .{
             .execute = executeFn,
             .deinit = deinitFn,
         };
 
-        fn initTool(self: *@This()) void {
-            self.tool = .{
-                .descriptor = desc,
-                .vtable = &vtable,
+        fn initTool(self: *@This(), calls: *std.atomic.Value(usize), deinited: *bool) void {
+            self.* = .{
+                .tool = .{
+                    .descriptor = desc,
+                    .vtable = &vtable,
+                },
+                .calls = calls,
+                .deinited = deinited,
             };
         }
 
         fn executeFn(tool: *const Tool, alloc: Allocator, _: Io, _: ToolCallContext, _: []const Argument) Tool.CallError![]const u8 {
-            const self: *@This() = @constCast(@fieldParentPtr("tool", tool));
-            self.calls += 1;
+            const self: *const @This() = @fieldParentPtr("tool", tool);
+            _ = self.calls.fetchAdd(1, .monotonic);
             return try alloc.dupe(u8, "custom vtable called");
         }
 
         fn deinitFn(tool: *Tool) void {
-            const self: *@This() = @fieldParentPtr("tool", tool);
-            self.deinited = true;
+            const self: *const @This() = @fieldParentPtr("tool", tool);
+            self.deinited.* = true;
         }
     };
 
-    var custom: CustomTool = .{ .tool = undefined };
-    custom.initTool();
+    var calls = std.atomic.Value(usize).init(0);
+    var deinited = false;
+    var custom: CustomTool = undefined;
+    custom.initTool(&calls, &deinited);
 
     var res = try custom.tool.execute(allocator, io, &session_state, "id_vtable", &.{});
     defer res.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), custom.calls);
+    try std.testing.expectEqual(@as(usize, 1), calls.load(.monotonic));
     try std.testing.expectEqualStrings("custom vtable called", res.result);
 
-    try std.testing.expect(!custom.deinited);
+    try std.testing.expect(!deinited);
     custom.tool.deinit();
-    try std.testing.expect(custom.deinited);
+    try std.testing.expect(deinited);
+}
+
+test "makeExecuteFn rejects *Tool parameter" {
+    const desc: llm.types.Tool = .{
+        .name = "mut_tool_test",
+        .description = "desc",
+        .parameters = &.{},
+    };
+    const Impl = struct {
+        fn run(_: *Tool) ![]const u8 {
+            return "";
+        }
+    };
+    const res = comptime makeExecuteFn(desc, Impl.run);
+    try std.testing.expectEqual(ValidationError.UnsupportedType, res.err.code);
+    try std.testing.expectEqualStrings("Tool execution function parameter cannot be '*Tool'. Use '*const Tool' instead, as tools receive immutable references during execution.", res.err.msg);
 }
 
 test "Tool.deinit on Tool.fromFn is safe no-op" {

@@ -11,6 +11,15 @@ const StreamingCallback = types.StreamingCallback;
 const StepContinuation = types.StepContinuation;
 const StepOutcome = types.StepOutcome;
 
+/// Intrusive interface for an LLM provider.
+///
+/// Concrete providers (such as Gemini) implement this interface by embedding `Provider` as a field
+/// (e.g. `interface: Provider = .{ .vtable = &vtable }`) and implementing the methods in `Provider.VTable`.
+///
+/// **Pointer Stability & Memory Safety:**
+/// Provider method implementations recover the enclosing provider struct using
+/// `@fieldParentPtr("interface", provider)`. The enclosing provider instance MUST NOT be copied by
+/// value or moved in memory once its pointer or interface reference is taken.
 const Provider = @This();
 
 /// Pointer to the provider implementation's virtual function table.

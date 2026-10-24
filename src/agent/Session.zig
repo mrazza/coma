@@ -860,7 +860,8 @@ test "Session.executeTurn - error.TurnAlreadyRunning when turn is in progress" {
     defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
-    var blocking_tool = BlockingTool.init(io);
+    var blocking_state: BlockingTool.State = .{};
+    var blocking_tool = BlockingTool.init(&blocking_state, io);
 
     var session = try Session.init(
         allocator,
@@ -928,7 +929,8 @@ test "Session.executeTurnStreaming - error.TurnAlreadyRunning when turn is in pr
     defer mock_provider.deinit();
     const prov = mock_provider.provider();
 
-    var blocking_tool = BlockingTool.init(io);
+    var blocking_state: BlockingTool.State = .{};
+    var blocking_tool = BlockingTool.init(&blocking_state, io);
 
     var session = try Session.init(
         allocator,
